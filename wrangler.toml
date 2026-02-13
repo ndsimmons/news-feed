@@ -8,16 +8,16 @@ compatibility_date = "2024-01-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "news-feed-db"
-database_id = "" # Will be filled after creating database
+database_id = "8a170cc9-10c1-4996-801d-c0e5ab4c15f4"
 
-# KV Namespace (for caching)
+# KV Namespace
 [[kv_namespaces]]
 binding = "KV"
-id = "" # Will be filled after creating KV namespace
+id = "6a1dd252ef6e47a39dbb338443f4e264"
 
 # Cron Triggers - fetch articles every hour
 [triggers]
-crons = ["0 * * * *"]  # Every hour at minute 0
+crons = ["0 * * * *"]
 
 # Environment Variables
 [vars]
@@ -27,8 +27,3 @@ ENVIRONMENT = "development"
 [env.production]
 name = "news-feed-production"
 vars = { ENVIRONMENT = "production" }
-
-# Routes - configure after deploying to Cloudflare Pages
-# routes = [
-#   { pattern = "news-feed.pages.dev/api/*", zone_name = "pages.dev" }
-# ]
