@@ -15,10 +15,16 @@ import {
   interestWeightsToScoringWeights,
   getTopArticles 
 } from './scoring';
+import {
+  generateArticleEmbedding,
+  storeEmbedding
+} from './embeddings';
 
 interface Env {
   DB: D1Database;
   KV: KVNamespace;
+  AI: any; // Cloudflare AI binding
+  VECTORIZE: any; // Vectorize binding
 }
 
 export default {
@@ -198,6 +204,40 @@ async function handleVote(
     SET weight = ?, updated_at = CURRENT_TIMESTAMP
     WHERE user_id = ? AND category_id = ? AND source_id = ?
   `).bind(categoryWeight, userId, article.category_id, article.source_id).run();
+
+  // NEW: Store preference for embedding-based recommendations
+  await env.DB.prepare(`
+    INSERT INTO user_preferences (user_id, article_id, vote) 
+    VALUES (?, ?, ?)
+    ON CONFLICT(user_id, article_id) 
+    DO UPDATE SET vote = ?, created_at = CURRENT_TIMESTAMP
+  `).bind(userId, body.articleId, body.vote, body.vote).run();
+
+  // NEW: Generate and store embedding if not exists (async, don't wait)
+  try {
+    const hasEmbedding = await env.DB.prepare(
+      'SELECT embedding_generated FROM article_embeddings WHERE article_id = ?'
+    ).bind(body.articleId).first();
+
+    if (!hasEmbedding) {
+      // Generate embedding in background
+      const embResult = await generateArticleEmbedding(env.AI, article as Article);
+      await storeEmbedding(env.VECTORIZE, body.articleId, embResult.embedding, {
+        title: article.title,
+        category_id: article.category_id,
+        source_id: article.source_id
+      });
+      
+      // Mark as generated
+      await env.DB.prepare(`
+        INSERT INTO article_embeddings (article_id, embedding_generated, embedding_model, generated_at)
+        VALUES (?, 1, ?, CURRENT_TIMESTAMP)
+      `).bind(body.articleId, embResult.model).run();
+    }
+  } catch (embError) {
+    // Don't fail the vote if embedding fails
+    console.error('Error generating embedding:', embError);
+  }
 
   const response: VoteResponse = {
     success: true,

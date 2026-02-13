@@ -5,12 +5,13 @@ import type { Article, ScoringWeights, ScoringParams, InterestWeight } from '../
 /**
  * Calculate article score based on various factors
  * 
- * Formula: score = (base_relevance × topic_match) + (upvotes × 2) - (downvotes × 3) - age_penalty
+ * Formula: score = (category_weight × source_weight × recency) + content_similarity_bonus
  */
 export function calculateArticleScore(
   article: Article,
   weights: ScoringWeights,
-  hasVoted: boolean = false
+  hasVoted: boolean = false,
+  contentScore: number = 0 // NEW: embedding-based content similarity score
 ): number {
   // Base score starts at 100
   let score = 100;
@@ -32,12 +33,16 @@ export function calculateArticleScore(
   const recencyMultiplier = Math.max(0.2, 1 - (hoursOld / 72));
   score *= recencyMultiplier;
 
-  // 4. Existing vote penalty (don't show already voted articles)
+  // 4. Content-based similarity boost (NEW!)
+  // This is the embedding magic - add similarity score to final result
+  score += contentScore;
+
+  // 5. Existing vote penalty (don't show already voted articles)
   if (hasVoted) {
     score *= 0.1; // heavily penalize
   }
 
-  // 5. Boost very recent articles (< 2 hours old)
+  // 6. Boost very recent articles (< 2 hours old)
   if (hoursOld < 2) {
     score *= 1.5; // 50% boost for fresh content
   }

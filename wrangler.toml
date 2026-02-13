@@ -17,6 +17,15 @@ binding = "KV"
 id = "275d84b02d934a339c7ff9472195a633"
 preview_id = "56ed03d80a944644a537bf08faa8a695"
 
+# Vectorize Index for embeddings
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "news-feed-embeddings"
+
+# AI Workers for generating embeddings
+[ai]
+binding = "AI"
+
 # Cron Triggers - fetch articles every hour
 [triggers]
 crons = ["0 * * * *"]

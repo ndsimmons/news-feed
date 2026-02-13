@@ -3,10 +3,13 @@
 
 import type { Source, Article } from '../src/lib/types';
 import { parseRSSFeed, parseRSSDate } from './parsers/rss';
+import { generateArticleEmbedding, storeEmbedding } from './embeddings';
 
 interface Env {
   DB: D1Database;
   KV: KVNamespace;
+  AI: any;
+  VECTORIZE: any;
 }
 
 export default {
@@ -93,7 +96,7 @@ async function fetchFromSource(source: Source, env: Env): Promise<number> {
     let inserted = 0;
     for (const article of articles) {
       try {
-        await env.DB.prepare(`
+        const result = await env.DB.prepare(`
           INSERT OR IGNORE INTO articles 
           (title, summary, url, source_id, category_id, published_at, image_url, author)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -108,7 +111,41 @@ async function fetchFromSource(source: Source, env: Env): Promise<number> {
           article.author || null
         ).run();
         
-        inserted++;
+        // Only count if actually inserted (not duplicate)
+        if (result.meta.changes > 0) {
+          inserted++;
+          const articleId = result.meta.last_row_id;
+          
+          // NEW: Generate embedding for new article (async, don't block)
+          try {
+            const fullArticle = {
+              id: articleId,
+              title: article.title || '',
+              summary: article.summary,
+              url: article.url || '',
+              source_id: source.id,
+              category_id: source.category_id
+            } as Article;
+            
+            const embResult = await generateArticleEmbedding(env.AI, fullArticle);
+            await storeEmbedding(env.VECTORIZE, articleId, embResult.embedding, {
+              title: article.title,
+              category_id: source.category_id,
+              source_id: source.id
+            });
+            
+            // Mark as generated
+            await env.DB.prepare(`
+              INSERT INTO article_embeddings (article_id, embedding_generated, embedding_model, generated_at)
+              VALUES (?, 1, ?, CURRENT_TIMESTAMP)
+            `).bind(articleId, embResult.model).run();
+            
+            console.log(`Generated embedding for article ${articleId}`);
+          } catch (embError) {
+            // Don't fail the entire fetch if embedding fails
+            console.error(`Failed to generate embedding for article ${articleId}:`, embError);
+          }
+        }
       } catch (error) {
         // Probably duplicate URL, skip
         console.log(`Skipping duplicate article: ${article.url}`);
