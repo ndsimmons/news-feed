@@ -14,6 +14,7 @@ database_id = "8a170cc9-10c1-4996-801d-c0e5ab4c15f4"
 [[kv_namespaces]]
 binding = "KV"
 id = "6a1dd252ef6e47a39dbb338443f4e264"
+preview_id = "5622cda4e67044ffa3005126cf9089e2"
 
 # Cron Triggers - fetch articles every hour
 [triggers]
