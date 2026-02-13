@@ -11,9 +11,10 @@ export default defineConfig({
   vite: {
     server: {
       proxy: {
-        // Proxy API requests to the local worker
+        // Proxy API requests to production worker (has 101 articles!)
+        // Use 'http://localhost:8787' for local development
         '/api': {
-          target: 'http://localhost:8787',
+          target: 'https://news-feed-api.nsimmons.workers.dev',
           changeOrigin: true
         }
       }

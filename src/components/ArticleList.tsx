@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import FeedCard from './FeedCard';
 import CategoryFilter from './CategoryFilter';
 import type { Article, FeedResponse } from '../lib/types';
+import { API_BASE_URL } from '../lib/config';
 
 export default function ArticleList() {
   const [articles, setArticles] = useState<Article[]>([]);
@@ -28,7 +29,7 @@ export default function ArticleList() {
         params.append('category', category);
       }
 
-      const response = await fetch(`/api/feed?${params}`);
+      const response = await fetch(`${API_BASE_URL}/api/feed?${params}`);
       
       if (!response.ok) {
         throw new Error('Failed to fetch articles');
@@ -46,7 +47,7 @@ export default function ArticleList() {
 
   const handleVote = async (articleId: number, vote: number) => {
     try {
-      const response = await fetch('/api/vote', {
+      const response = await fetch(`${API_BASE_URL}/api/vote`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

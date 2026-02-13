@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { Category } from '../lib/types';
+import { API_BASE_URL } from '../lib/config';
 
 interface CategoryFilterProps {
   onCategoryChange: (slug: string | null) => void;
@@ -16,7 +17,7 @@ export default function CategoryFilter({ onCategoryChange }: CategoryFilterProps
 
   const fetchCategories = async () => {
     try {
-      const response = await fetch('/api/categories');
+      const response = await fetch(`${API_BASE_URL}/api/categories`);
       const data = await response.json();
       setCategories(data);
     } catch (error) {

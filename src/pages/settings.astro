@@ -75,10 +75,13 @@ import Layout from '../layouts/Layout.astro';
 </Layout>
 
 <script>
+  // API Configuration
+  const API_BASE_URL = import.meta.env.PUBLIC_API_URL || 'https://news-feed-api.nsimmons.workers.dev';
+  
   // Fetch and display sources
   async function loadSources() {
     try {
-      const response = await fetch('/api/sources');
+      const response = await fetch(`${API_BASE_URL}/api/sources`);
       const sources = await response.json();
       
       const listEl = document.getElementById('sources-list');
