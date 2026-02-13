@@ -3,18 +3,19 @@
 name = "news-feed"
 main = "workers/api.ts"
 compatibility_date = "2024-01-01"
+account_id = "f2ec251ad678c39bdc19ae4009db42db"
 
 # D1 Database
 [[d1_databases]]
 binding = "DB"
 database_name = "news-feed-db"
-database_id = "8a170cc9-10c1-4996-801d-c0e5ab4c15f4"
+database_id = "c4145c92-d518-4245-a3c2-1b873ac93af4"
 
 # KV Namespace
 [[kv_namespaces]]
 binding = "KV"
-id = "6a1dd252ef6e47a39dbb338443f4e264"
-preview_id = "5622cda4e67044ffa3005126cf9089e2"
+id = "275d84b02d934a339c7ff9472195a633"
+preview_id = "56ed03d80a944644a537bf08faa8a695"
 
 # Cron Triggers - fetch articles every hour
 [triggers]
