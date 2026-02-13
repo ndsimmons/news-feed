@@ -17,7 +17,8 @@ import {
 } from './scoring';
 import {
   generateArticleEmbedding,
-  storeEmbedding
+  storeEmbedding,
+  calculateContentScore
 } from './embeddings';
 
 interface Env {
@@ -85,7 +86,7 @@ export default {
 };
 
 /**
- * GET /api/feed - Get personalized article feed
+ * GET /api/feed - Get personalized article feed with embedding-based content scoring
  */
 async function handleGetFeed(
   request: Request,
@@ -113,6 +114,17 @@ async function handleGetFeed(
     votedResult.results.map((v: any) => v.article_id)
   );
 
+  // NEW: Get user's liked and disliked articles for content-based scoring
+  const likedArticlesResult = await env.DB.prepare(
+    'SELECT article_id FROM votes WHERE user_id = ? AND vote = 1'
+  ).bind(userId).all();
+  const likedArticleIds = likedArticlesResult.results.map((v: any) => v.article_id);
+
+  const dislikedArticlesResult = await env.DB.prepare(
+    'SELECT article_id FROM votes WHERE user_id = ? AND vote = -1'
+  ).bind(userId).all();
+  const dislikedArticleIds = dislikedArticlesResult.results.map((v: any) => v.article_id);
+
   // Build query for articles
   let query = `
     SELECT a.*, s.name as source_name, c.name as category_name, c.slug as category_slug
@@ -133,9 +145,54 @@ async function handleGetFeed(
 
   const articlesResult = await env.DB.prepare(query).bind(...params).all();
   
-  // Score and sort articles
+  // NEW: Calculate content scores using embeddings
   const articles = articlesResult.results as Article[];
-  const topArticles = getTopArticles(articles, weights, votedArticleIds, limit);
+  const articlesWithContentScore = await Promise.all(
+    articles.map(async (article) => {
+      let contentScore = 0;
+      
+      // Only calculate content score if article has embedding
+      const hasEmbedding = await env.DB.prepare(
+        'SELECT embedding_generated FROM article_embeddings WHERE article_id = ? AND embedding_generated = 1'
+      ).bind(article.id).first();
+
+      if (hasEmbedding && (likedArticleIds.length > 0 || dislikedArticleIds.length > 0)) {
+        try {
+          // Get article embedding from Vectorize
+          const embeddingResult = await env.VECTORIZE.getByIds([article.id.toString()]);
+          
+          if (embeddingResult && embeddingResult.length > 0) {
+            const articleEmbedding = embeddingResult[0].values;
+            
+            // Calculate similarity score based on user preferences
+            contentScore = await calculateContentScore(
+              env.VECTORIZE,
+              articleEmbedding,
+              likedArticleIds,
+              dislikedArticleIds
+            );
+          }
+        } catch (error) {
+          console.error(`Error calculating content score for article ${article.id}:`, error);
+        }
+      }
+
+      return { ...article, contentScore };
+    })
+  );
+
+  // Score and sort articles with content scores
+  const scoredArticles = articlesWithContentScore.map(article => ({
+    ...article,
+    score: calculateArticleScore(
+      article,
+      weights,
+      votedArticleIds.has(article.id),
+      article.contentScore || 0
+    )
+  })).sort((a, b) => (b.score || 0) - (a.score || 0));
+
+  const topArticles = scoredArticles.slice(0, limit);
 
   // Add user vote status to each article
   const enrichedArticles = topArticles.map(article => ({
