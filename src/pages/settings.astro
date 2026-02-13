@@ -1,0 +1,117 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="Settings - NewsFeed">
+  <div class="max-w-5xl mx-auto px-4 py-8">
+    <h1 class="text-3xl font-bold text-gray-900 mb-8">Settings</h1>
+
+    <div class="space-y-8">
+      <!-- Sources Section -->
+      <section class="bg-white border border-gray-200 rounded-lg p-6">
+        <h2 class="text-xl font-bold text-gray-900 mb-4">News Sources</h2>
+        <p class="text-gray-600 mb-4">
+          Manage which sources are active and configure their settings.
+        </p>
+        
+        <div class="space-y-4" id="sources-list">
+          <div class="text-center py-8 text-gray-500">
+            Loading sources...
+          </div>
+        </div>
+      </section>
+
+      <!-- Categories Section -->
+      <section class="bg-white border border-gray-200 rounded-lg p-6">
+        <h2 class="text-xl font-bold text-gray-900 mb-4">Categories</h2>
+        <p class="text-gray-600 mb-4">
+          Your interest categories and their current weights.
+        </p>
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="p-4 bg-blue-50 rounded border border-blue-200">
+            <h3 class="font-bold text-blue-900">Tech/AI</h3>
+            <p class="text-sm text-gray-600 mt-1">Weight: 1.0</p>
+          </div>
+          <div class="p-4 bg-green-50 rounded border border-green-200">
+            <h3 class="font-bold text-green-900">Business/Finance</h3>
+            <p class="text-sm text-gray-600 mt-1">Weight: 1.0</p>
+          </div>
+          <div class="p-4 bg-yellow-50 rounded border border-yellow-200">
+            <h3 class="font-bold text-yellow-900">Sports</h3>
+            <p class="text-sm text-gray-600 mt-1">Weight: 1.0</p>
+          </div>
+          <div class="p-4 bg-purple-50 rounded border border-purple-200">
+            <h3 class="font-bold text-purple-900">Politics</h3>
+            <p class="text-sm text-gray-600 mt-1">Weight: 1.0</p>
+          </div>
+        </div>
+        
+        <p class="text-xs text-gray-500 mt-4">
+          💡 Weights are automatically adjusted based on your voting behavior. Upvoted categories get higher weights.
+        </p>
+      </section>
+
+      <!-- About Section -->
+      <section class="bg-white border border-gray-200 rounded-lg p-6">
+        <h2 class="text-xl font-bold text-gray-900 mb-4">About</h2>
+        <div class="prose prose-sm text-gray-600">
+          <p>
+            This is a personalized news aggregation platform that learns from your preferences.
+            The more you vote on articles, the better the recommendations become.
+          </p>
+          <h3 class="text-base font-bold text-gray-900 mt-4 mb-2">How it works:</h3>
+          <ul class="space-y-1">
+            <li>Articles are fetched from RSS feeds and APIs every hour</li>
+            <li>A scoring algorithm ranks articles based on your interests</li>
+            <li>Upvoting boosts similar content from that source/category</li>
+            <li>Downvoting reduces similar content</li>
+            <li>Fresher content is prioritized</li>
+          </ul>
+        </div>
+      </section>
+    </div>
+  </div>
+</Layout>
+
+<script>
+  // Fetch and display sources
+  async function loadSources() {
+    try {
+      const response = await fetch('/api/sources');
+      const sources = await response.json();
+      
+      const listEl = document.getElementById('sources-list');
+      if (!listEl) return;
+      
+      if (sources.length === 0) {
+        listEl.innerHTML = '<p class="text-gray-500 text-center">No sources configured</p>';
+        return;
+      }
+      
+      listEl.innerHTML = sources.map((source: any) => `
+        <div class="flex items-center justify-between p-4 border border-gray-200 rounded">
+          <div class="flex-1">
+            <h3 class="font-bold text-gray-900">${source.name}</h3>
+            <p class="text-sm text-gray-600">${source.category_name} • ${source.fetch_method}</p>
+            <p class="text-xs text-gray-500 mt-1">${source.url}</p>
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="text-sm ${source.active ? 'text-green-600' : 'text-gray-400'}">
+              ${source.active ? '✓ Active' : '✗ Inactive'}
+            </span>
+          </div>
+        </div>
+      `).join('');
+    } catch (error) {
+      console.error('Error loading sources:', error);
+      const listEl = document.getElementById('sources-list');
+      if (listEl) {
+        listEl.innerHTML = '<p class="text-red-500 text-center">Error loading sources</p>';
+      }
+    }
+  }
+  
+  // Load on page load
+  loadSources();
+</script>
