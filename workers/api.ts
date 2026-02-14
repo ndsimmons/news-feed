@@ -376,19 +376,15 @@ async function handleGetFeed(
   // For logged-out users, also fetch balanced to show variety
   let articles: Article[] = [];
   
-  if (!categorySlug) {
-    // BALANCED SAMPLING: Fetch 50 most recent from EACH category to ensure all topics represented
-    const categoriesResult = await env.DB.prepare('SELECT id FROM categories').all();
-    const categoryIds = categoriesResult.results.map((c: any) => c.id);
-    
-    for (const catId of categoryIds) {
-      const catQuery = query + ' AND c.id = ? ORDER BY a.published_at DESC LIMIT 50';
-      const catResult = await env.DB.prepare(catQuery).bind(...params, catId).all();
-      articles.push(...(catResult.results as Article[]));
-    }
-    
-    console.log(`Fetched ${articles.length} articles (balanced across ${categoryIds.length} categories)`);
-  } else {
+   if (!categorySlug) {
+     // Fetch 1000 most recent articles regardless of category
+     // Larger sample = better normalization + let scores determine what rises to the top
+     const allQuery = query + ' ORDER BY a.published_at DESC LIMIT 1000';
+     const allResult = await env.DB.prepare(allQuery).bind(...params).all();
+     articles = allResult.results as Article[];
+     
+     console.log(`Fetched ${articles.length} articles (all categories, scored on merit)`);
+   } else {
     // CATEGORY FILTERED: Fetch by recency for specific category
     query += ' ORDER BY a.published_at DESC LIMIT 100';
     const articlesResult = await env.DB.prepare(query).bind(...params).all();
