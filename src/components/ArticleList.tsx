@@ -19,6 +19,7 @@ export default function ArticleList() {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [seenArticles, setSeenArticles] = useState<Set<number>>(new Set());
   const [pendingImpressions, setPendingImpressions] = useState<Set<number>>(new Set());
+  const [lastFetchTime, setLastFetchTime] = useState<number>(Date.now());
 
   useEffect(() => {
     setPage(1);
@@ -31,6 +32,18 @@ export default function ArticleList() {
       console.log('Refresh trigger failed:', err)
     );
   }, [category]);
+
+  // Refresh feed when authentication state changes (login/logout)
+  useEffect(() => {
+    // Skip on initial mount (loading is true)
+    if (!loading) {
+      console.log('Auth state changed - refreshing feed');
+      setArticles([]);
+      setPage(1);
+      setHasMore(true);
+      fetchArticles(true);
+    }
+  }, [isAuthenticated]);
 
   // Listen for personalize button click from header
   useEffect(() => {
@@ -61,6 +74,26 @@ export default function ArticleList() {
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
   }, [loadingMore, hasMore, page]);
+
+  // Refresh feed when tab becomes visible (cross-device sync)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        const feedAge = Date.now() - lastFetchTime;
+        // Refresh if feed is older than 5 minutes
+        if (feedAge > 5 * 60 * 1000) {
+          console.log('Feed is stale - refreshing after', Math.round(feedAge / 1000), 'seconds');
+          setArticles([]);
+          setPage(1);
+          setHasMore(true);
+          fetchArticles(true);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [lastFetchTime]);
 
   // Track article impressions - batch send every 3 seconds
   useEffect(() => {
@@ -178,6 +211,9 @@ export default function ArticleList() {
       
       // If we got fewer articles than requested, we've reached the end
       setHasMore(data.articles.length >= 30);
+      
+      // Update last fetch time for staleness checking
+      setLastFetchTime(Date.now());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
       console.error('Error fetching articles:', err);

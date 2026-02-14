@@ -134,8 +134,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
+    console.log('Logging out - clearing auth state');
     setUser(null);
     localStorage.removeItem('auth_token');
+    // Feed will auto-refresh via ArticleList's isAuthenticated useEffect
   };
 
   return (
