@@ -20,7 +20,7 @@ const { title, description = 'Personalized news aggregation with smart recommend
     <title>{title}</title>
   </head>
   <body>
-    <header class="site-header">
+    <header class="site-header" id="site-header">
       <div class="max-w-5xl mx-auto px-4 py-4">
         <div class="flex items-center justify-between">
           <a href="/" class="site-logo flex items-center gap-2">
@@ -61,5 +61,43 @@ const { title, description = 'Personalized news aggregation with smart recommend
         </p>
       </div>
     </footer>
+
+    <script>
+      // Hide header on scroll down, show on scroll up
+      let lastScrollTop = 0;
+      let scrollTimeout: number | null = null;
+      const header = document.getElementById('site-header');
+      const scrollThreshold = 50; // Start hiding after 50px scroll
+      
+      if (header) {
+        window.addEventListener('scroll', () => {
+          // Clear timeout if user is still scrolling
+          if (scrollTimeout) {
+            clearTimeout(scrollTimeout);
+          }
+          
+          // Debounce scroll events
+          scrollTimeout = window.setTimeout(() => {
+            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+            
+            // Only apply hiding behavior after scrolling past threshold
+            if (scrollTop > scrollThreshold) {
+              if (scrollTop > lastScrollTop) {
+                // Scrolling down - hide header
+                header.style.transform = 'translateY(-100%)';
+              } else {
+                // Scrolling up - show header
+                header.style.transform = 'translateY(0)';
+              }
+            } else {
+              // At top of page - always show header
+              header.style.transform = 'translateY(0)';
+            }
+            
+            lastScrollTop = scrollTop <= 0 ? 0 : scrollTop;
+          }, 10); // Small delay for smooth experience
+        }, { passive: true });
+      }
+    </script>
   </body>
 </html>

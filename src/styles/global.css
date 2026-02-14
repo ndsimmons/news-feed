@@ -96,6 +96,7 @@
   /* Header */
   .site-header {
     @apply border-b-2 border-gray-200 bg-white sticky top-0 z-50;
+    transition: transform 0.3s ease-in-out;
   }
 
   .site-logo {

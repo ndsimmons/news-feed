@@ -53,9 +53,9 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
   const handleVote = async (vote: number) => {
     if (isVoting) return;
     
-    // If not authenticated, don't show animation - onVote will show auth modal
+    // If not authenticated, show auth modal
     if (!isAuthenticated) {
-      await onVote(article.id, vote);
+      window.dispatchEvent(new CustomEvent('open-auth-modal'));
       return;
     }
     
@@ -387,8 +387,8 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
                     e.stopPropagation();
                     handleVote(1);
                   }}
-                  disabled={isVoting || !isAuthenticated}
-                  className={`vote-button upvote ${userVote === 1 ? 'voted' : ''} ${!isAuthenticated ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  disabled={isVoting}
+                  className={`vote-button upvote ${userVote === 1 ? 'voted' : ''}`}
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path>
@@ -399,8 +399,8 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
                     e.stopPropagation();
                     handleVote(-1);
                   }}
-                  disabled={isVoting || !isAuthenticated}
-                  className={`vote-button downvote ${userVote === -1 ? 'voted' : ''} ${!isAuthenticated ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  disabled={isVoting}
+                  className={`vote-button downvote ${userVote === -1 ? 'voted' : ''}`}
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"></path>
@@ -412,7 +412,7 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
                     handleSaveToggle();
                   }}
                   disabled={isSaving}
-                  className={`vote-button save ${isSaved ? 'voted' : ''} ${!isAuthenticated ? 'opacity-50' : ''}`}
+                  className={`vote-button save ${isSaved ? 'voted' : ''}`}
                   title={isSaved ? 'Unsave article' : 'Save for later'}
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill={isSaved ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
