@@ -358,6 +358,7 @@ export default function ArticleList() {
                 onVote={handleVote}
                 isAuthenticated={isAuthenticated}
                 userId={user?.id || 0}
+                isSavedView={category === 'saved'}
               />
             ))}
           </div>

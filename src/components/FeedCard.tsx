@@ -36,9 +36,10 @@ interface FeedCardProps {
   onVote: (articleId: number, vote: number) => Promise<void>;
   isAuthenticated?: boolean;
   userId?: number;
+  isSavedView?: boolean;
 }
 
-export default function FeedCard({ article, onVote, isAuthenticated = false, userId = 0 }: FeedCardProps) {
+export default function FeedCard({ article, onVote, isAuthenticated = false, userId = 0, isSavedView = false }: FeedCardProps) {
   const [isVoting, setIsVoting] = useState(false);
   const [userVote, setUserVote] = useState<number>(article.userVote || 0);
   const [swipeOffset, setSwipeOffset] = useState(0);
@@ -46,7 +47,7 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
   const [showVoteFeedback, setShowVoteFeedback] = useState(false);
   const [feedbackType, setFeedbackType] = useState<'upvote' | 'downvote' | null>(null);
   const [stopBouncing, setStopBouncing] = useState(false);
-  const [isSaved, setIsSaved] = useState(false);
+  const [isSaved, setIsSaved] = useState(isSavedView); // If in saved view, article is already saved
   const [isSaving, setIsSaving] = useState(false);
   const cardRef = useRef<HTMLElement>(null);
 
@@ -174,7 +175,10 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
       
       // More responsive: reduced threshold from 100 to 60
       if (Math.abs(swipeOffset) > 60) {
-        if (swipeOffset > 0) {
+        if (isSavedView && swipeOffset < 0) {
+          // In saved view, swipe left = unsave
+          handleSaveToggle();
+        } else if (swipeOffset > 0) {
           handleVote(1); // Swipe right = upvote
         } else {
           handleVote(-1); // Swipe left = downvote
@@ -236,7 +240,10 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
       
       // Very sensitive threshold like Signal (just 50px)
       if (isHorizontalSwipe && Math.abs(currentOffset) > 50) {
-        if (currentOffset > 0) {
+        if (isSavedView && currentOffset < 0) {
+          // In saved view, swipe left = unsave
+          handleSaveToggle();
+        } else if (currentOffset > 0) {
           handleVote(1); // Swipe right = upvote
         } else {
           handleVote(-1); // Swipe left = downvote
@@ -314,19 +321,39 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
         </div>
       );
     } else {
-      // Swiping left - show sad rooster in the RIGHT margin within the card bounds
-      return (
-        <div 
-          className="absolute right-6 top-1/2 -translate-y-1/2 z-0 pointer-events-none"
-          style={{ opacity: iconOpacity }}
-        >
-          <img 
-            src="/sad-rooster.png" 
-            alt="Downvote" 
-            className="h-12 w-12 object-contain"
-          />
-        </div>
-      );
+      // Swiping left
+      if (isSavedView) {
+        // In saved view, show trash/remove icon
+        return (
+          <div 
+            className="absolute right-6 top-1/2 -translate-y-1/2 z-0 pointer-events-none"
+            style={{ opacity: iconOpacity }}
+          >
+            <div className="bg-red-500 rounded-full p-3">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                <line x1="10" y1="11" x2="10" y2="17"></line>
+                <line x1="14" y1="11" x2="14" y2="17"></line>
+              </svg>
+            </div>
+          </div>
+        );
+      } else {
+        // Normal view, show sad rooster
+        return (
+          <div 
+            className="absolute right-6 top-1/2 -translate-y-1/2 z-0 pointer-events-none"
+            style={{ opacity: iconOpacity }}
+          >
+            <img 
+              src="/sad-rooster.png" 
+              alt="Downvote" 
+              className="h-12 w-12 object-contain"
+            />
+          </div>
+        );
+      }
     }
   };
 
