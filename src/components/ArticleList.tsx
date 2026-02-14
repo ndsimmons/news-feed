@@ -279,6 +279,11 @@ export default function ArticleList() {
     }
   };
 
+  const handleArticleRemoved = (articleId: number) => {
+    // Remove article from state immediately (for saved view when unsaving)
+    setArticles(prevArticles => prevArticles.filter(article => article.id !== articleId));
+  };
+
   const handleCategoryChange = (slug: string | null) => {
     setCategory(slug);
   };
@@ -359,6 +364,7 @@ export default function ArticleList() {
                 isAuthenticated={isAuthenticated}
                 userId={user?.id || 0}
                 isSavedView={category === 'saved'}
+                onArticleRemoved={handleArticleRemoved}
               />
             ))}
           </div>

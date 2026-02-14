@@ -37,9 +37,10 @@ interface FeedCardProps {
   isAuthenticated?: boolean;
   userId?: number;
   isSavedView?: boolean;
+  onArticleRemoved?: (articleId: number) => void;
 }
 
-export default function FeedCard({ article, onVote, isAuthenticated = false, userId = 0, isSavedView = false }: FeedCardProps) {
+export default function FeedCard({ article, onVote, isAuthenticated = false, userId = 0, isSavedView = false, onArticleRemoved }: FeedCardProps) {
   const [isVoting, setIsVoting] = useState(false);
   const [userVote, setUserVote] = useState<number>(article.userVote || 0);
   const [swipeOffset, setSwipeOffset] = useState(0);
@@ -120,6 +121,11 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
         
         if (!response.ok) throw new Error('Failed to unsave');
         setIsSaved(false);
+        
+        // If in saved view, notify parent to remove article from list
+        if (isSavedView && onArticleRemoved) {
+          onArticleRemoved(article.id);
+        }
       } else {
         // Save
         const response = await fetch(`${API_BASE_URL}/api/saved`, {
