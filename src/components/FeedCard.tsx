@@ -51,10 +51,18 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
   const [stopBouncing, setStopBouncing] = useState(false);
   const [isSaved, setIsSaved] = useState(isSavedView); // If in saved view, article is already saved
   const [isSaving, setIsSaving] = useState(false);
+  // ALWAYS use adjustedScore (normalized), never raw score
   const [currentScore, setCurrentScore] = useState<number | undefined>(article.adjustedScore);
   const [scoreUpdating, setScoreUpdating] = useState(false);
   const [showScoreTooltip, setShowScoreTooltip] = useState(false);
   const cardRef = useRef<HTMLElement>(null);
+
+  // Debug: Log if we're missing adjustedScore but have raw score
+  useEffect(() => {
+    if (article.score !== undefined && article.adjustedScore === undefined) {
+      console.error(`⚠️ Article ${article.id} has raw score (${article.score}) but NO adjustedScore!`);
+    }
+  }, []);
 
   // Calculate percentile for a score in a normal distribution (mean=50, stdDev=20)
   const calculatePercentile = (score: number): number => {

@@ -335,8 +335,10 @@ export default function ArticleList() {
       
       // Log first few article scores
       if (data.articles.length > 0) {
-        const scores = data.articles.slice(0, 5).map(a => a.score?.toFixed(1));
-        console.log(`📊 Article scores:`, scores);
+        const first = data.articles[0];
+        console.log(`📊 First article: id=${first.id}, score=${first.score?.toFixed(1)}, adjustedScore=${first.adjustedScore}`);
+        const adjustedScores = data.articles.slice(0, 5).map(a => a.adjustedScore);
+        console.log(`📊 First 5 adjusted scores:`, adjustedScores);
       }
       
       if (reset) {

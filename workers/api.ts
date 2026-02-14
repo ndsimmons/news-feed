@@ -421,6 +421,12 @@ async function handleGetFeed(
       userVote: 0
     }));
     
+    // DEBUG: Log first article to verify adjustedScore is present
+    if (enrichedArticles.length > 0) {
+      const first = enrichedArticles[0];
+      console.log(`📤 API Response - First article: id=${first.id}, score=${first.score}, adjustedScore=${first.adjustedScore}`);
+    }
+    
     const response: FeedResponse = {
       articles: enrichedArticles,
       total: diverseArticles.length,
@@ -476,6 +482,12 @@ async function handleGetFeed(
         (votedResult.results.find((v: any) => v.article_id === article.id)?.vote || 0) : 0
     }));
     
+    // DEBUG: Log first article to verify adjustedScore is present
+    if (enrichedArticles.length > 0) {
+      const first = enrichedArticles[0];
+      console.log(`📤 API Response - First article: id=${first.id}, score=${first.score}, adjustedScore=${first.adjustedScore}`);
+    }
+    
     const response: FeedResponse = {
       articles: enrichedArticles,
       total: onboardingArticles.length,
@@ -518,6 +530,12 @@ async function handleGetFeed(
       userVote: votedArticleIds.has(article.id) ? 
         (votedResult.results.find((v: any) => v.article_id === article.id)?.vote || 0) : 0
     }));
+    
+    // DEBUG: Log first article to verify adjustedScore is present
+    if (enrichedArticles.length > 0) {
+      const first = enrichedArticles[0];
+      console.log(`📤 API Response - First article: id=${first.id}, score=${first.score}, adjustedScore=${first.adjustedScore}`);
+    }
     
     const response: FeedResponse = {
       articles: enrichedArticles,
