@@ -63,10 +63,11 @@ const { title, description = 'Personalized news aggregation with smart recommend
     </footer>
 
     <script>
-      // Hide header on scroll down, show on scroll up
+      // Hide header and subnav on scroll down, show on scroll up
       let lastScrollTop = 0;
       let scrollTimeout: number | null = null;
       const header = document.getElementById('site-header');
+      const categoryFilter = document.getElementById('category-filter');
       const scrollThreshold = 50; // Start hiding after 50px scroll
       
       if (header) {
@@ -83,15 +84,24 @@ const { title, description = 'Personalized news aggregation with smart recommend
             // Only apply hiding behavior after scrolling past threshold
             if (scrollTop > scrollThreshold) {
               if (scrollTop > lastScrollTop) {
-                // Scrolling down - hide header
+                // Scrolling down - hide header and subnav
                 header.style.transform = 'translateY(-100%)';
+                if (categoryFilter) {
+                  categoryFilter.style.transform = 'translateY(-100%)';
+                }
               } else {
-                // Scrolling up - show header
+                // Scrolling up - show header and subnav
                 header.style.transform = 'translateY(0)';
+                if (categoryFilter) {
+                  categoryFilter.style.transform = 'translateY(0)';
+                }
               }
             } else {
-              // At top of page - always show header
+              // At top of page - always show header and subnav
               header.style.transform = 'translateY(0)';
+              if (categoryFilter) {
+                categoryFilter.style.transform = 'translateY(0)';
+              }
             }
             
             lastScrollTop = scrollTop <= 0 ? 0 : scrollTop;

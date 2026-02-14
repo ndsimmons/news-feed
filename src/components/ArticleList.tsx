@@ -305,7 +305,7 @@ export default function ArticleList() {
       />
       
       <div className="max-w-5xl mx-auto">
-        <div className="sticky top-16 bg-white z-40 px-4">
+        <div id="category-filter" className="sticky top-16 bg-white z-40 px-4 transition-transform duration-300 ease-in-out">
           <CategoryFilter onCategoryChange={handleCategoryChange} />
         </div>
 
