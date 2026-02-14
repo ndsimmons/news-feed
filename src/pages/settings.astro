@@ -71,23 +71,9 @@ import Layout from '../layouts/Layout.astro';
         <!-- Algorithm Preferences Section -->
          <section id="section-algorithm" class="settings-section hidden">
            <h2 class="text-3xl font-bold text-gray-900 mb-2">Algorithm Preferences</h2>
-           <p class="text-gray-600 mb-4">
-             Your feed ranks articles using learned preferences from your votes, content similarity from AI embeddings, and recency — then normalizes scores to a bell curve.
+           <p class="text-gray-600 mb-6">
+             Customize how the recommendation algorithm ranks and displays articles.
            </p>
-
-           <div class="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
-             <h4 class="text-sm font-bold text-gray-900 mb-2">Key Variables</h4>
-             <ol class="list-decimal list-inside text-sm text-gray-700 space-y-1">
-               <li><strong>Category Weight</strong> — learned from votes (0.1x to 2.0x)</li>
-               <li><strong>Source Weight</strong> — learned from votes (0.1x to 2.0x)</li>
-               <li><strong>Recency Decay</strong> — how quickly articles lose relevance (12-72 hrs)</li>
-               <li><strong>Breaking News Boost</strong> — 1.4-1.8x for articles less than 2 hours old</li>
-               <li><strong>Content Similarity</strong> — AI embedding score adds 0-100 points</li>
-               <li><strong>Source Variety</strong> — controls diversity of publishers in feed</li>
-               <li><strong>Metadata in Embeddings</strong> — whether author/source context is included</li>
-               <li><strong>Exploration Factor</strong> — percentage of feed from outside your preferences</li>
-             </ol>
-           </div>
 
            <!-- Algorithm Explanation -->
           <div class="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-6 mb-6">
