@@ -172,14 +172,14 @@ export function calculateDiverseScore(
     score *= 2.5; // 150% boost for breaking news
   }
 
-  // 3. Diversity bonus: reward unseen categories and sources
+  // 3. MASSIVE diversity bonus: strongly reward unseen categories and sources
   // This ensures variety across the feed
   if (!seenCategoryIds.has(article.category_id)) {
-    score *= 1.3; // 30% bonus for new category
+    score *= 2.5; // 150% bonus for new category (was 30%)
   }
   
   if (!seenSourceIds.has(article.source_id)) {
-    score *= 1.2; // 20% bonus for new source
+    score *= 1.8; // 80% bonus for new source (was 20%)
   }
 
   return Math.round(score * 100) / 100;
@@ -210,10 +210,48 @@ export function scoreAndSortArticlesDiverse(
   // Sort by score
   scoredArticles.sort((a, b) => (b.score || 0) - (a.score || 0));
 
-  // Apply diversity: re-rank to ensure category/source variety
+  // PHASE 1: MANDATORY CATEGORY ROTATION - First 6 articles MUST be from different categories
+  // This guarantees variety at the top of the feed
   const diverseArticles: Article[] = [];
   const articlePool = [...scoredArticles];
+  const usedCategoriesInFirstSix = new Set<number>();
   
+  // Get all unique category IDs available
+  const availableCategories = new Set(articlePool.map(a => a.category_id));
+  
+  // Force one article from each category in first 6 spots (up to 6 categories)
+  const targetFirstArticles = Math.min(6, availableCategories.size);
+  
+  for (let slot = 0; slot < targetFirstArticles && articlePool.length > 0; slot++) {
+    // Find the best article from an unseen category
+    let bestIndex = -1;
+    let bestScore = -1;
+    
+    for (let i = 0; i < articlePool.length; i++) {
+      const article = articlePool[i];
+      
+      // Skip if we've already used this category in first 6
+      if (usedCategoriesInFirstSix.has(article.category_id)) continue;
+      
+      const score = article.score || 0;
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+    
+    if (bestIndex >= 0) {
+      const selectedArticle = articlePool.splice(bestIndex, 1)[0];
+      diverseArticles.push(selectedArticle);
+      usedCategoriesInFirstSix.add(selectedArticle.category_id);
+      seenCategoryIds.add(selectedArticle.category_id);
+      seenSourceIds.add(selectedArticle.source_id);
+    } else {
+      break; // No more unique categories available
+    }
+  }
+  
+  // PHASE 2: CONTINUE WITH DIVERSITY-WEIGHTED SELECTION
   while (articlePool.length > 0 && diverseArticles.length < 100) {
     // Find next article that maximizes diversity
     let bestIndex = 0;
@@ -223,12 +261,12 @@ export function scoreAndSortArticlesDiverse(
       const article = articlePool[i];
       let diversityScore = article.score || 0;
       
-      // Heavy bonus for unseen categories/sources
+      // MASSIVE bonus for unseen categories/sources during re-ranking
       if (!seenCategoryIds.has(article.category_id)) {
-        diversityScore *= 1.5;
+        diversityScore *= 3.0; // 200% bonus
       }
       if (!seenSourceIds.has(article.source_id)) {
-        diversityScore *= 1.3;
+        diversityScore *= 2.0; // 100% bonus
       }
       
       if (diversityScore > bestScore) {
