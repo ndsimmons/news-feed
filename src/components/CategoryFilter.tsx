@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react';
 import type { Category } from '../lib/types';
 import { API_BASE_URL } from '../lib/config';
+import { useAuth } from '../lib/auth';
 
 interface CategoryFilterProps {
   onCategoryChange: (slug: string | null) => void;
 }
 
 export default function CategoryFilter({ onCategoryChange }: CategoryFilterProps) {
+  const { isAuthenticated } = useAuth();
   const [categories, setCategories] = useState<Category[]>([]);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -50,6 +52,15 @@ export default function CategoryFilter({ onCategoryChange }: CategoryFilterProps
       >
         All
       </button>
+      
+      {isAuthenticated && (
+        <button
+          onClick={() => handleCategoryClick('saved')}
+          className={`category-tab ${activeCategory === 'saved' ? 'active' : ''}`}
+        >
+          Saved
+        </button>
+      )}
       
       {categories.map(category => (
         <button

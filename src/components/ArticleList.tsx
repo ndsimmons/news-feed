@@ -119,6 +119,37 @@ export default function ArticleList() {
     setError(null);
     
     try {
+      // Special handling for "saved" category
+      if (category === 'saved') {
+        if (!isAuthenticated || !user) {
+          setError('Please sign in to view saved articles');
+          setArticles([]);
+          setLoading(false);
+          return;
+        }
+        
+        const params = new URLSearchParams({
+          userId: user.id.toString(),
+          limit: '100',
+          _t: Date.now().toString()
+        });
+        
+        const response = await fetch(`${API_BASE_URL}/api/saved?${params}`, {
+          cache: 'no-store'
+        });
+        
+        if (!response.ok) {
+          throw new Error('Failed to fetch saved articles');
+        }
+        
+        const data: FeedResponse = await response.json();
+        setArticles(data.articles);
+        setHasMore(false); // Saved articles don't paginate
+        setLoading(false);
+        return;
+      }
+      
+      // Normal feed fetch
       const params = new URLSearchParams({
         limit: '30',
         userId: user?.id.toString() || '0', // Use logged-in user ID or 0 for logged-out (diverse feed)
@@ -156,7 +187,7 @@ export default function ArticleList() {
   };
 
   const loadMoreArticles = async () => {
-    if (loadingMore || !hasMore) return;
+    if (loadingMore || !hasMore || category === 'saved') return;
     
     setLoadingMore(true);
     const nextPage = page + 1;
