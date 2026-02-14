@@ -87,6 +87,16 @@ function parseRSSItem(itemXml: string): RSSItem {
   item.author = extractTag(itemXml, 'author') || extractTag(itemXml, 'dc:creator') || '';
   item.content = extractTag(itemXml, 'content:encoded') || extractTag(itemXml, 'content') || '';
   
+  // Special handling for Techmeme: extract actual article URL from description
+  if (item.link && item.link.includes('techmeme.com') && item.description) {
+    // Techmeme format: First <A HREF> in CDATA is the actual article link
+    // Example: <A HREF="https://www.theinformation.com/articles/...">
+    const firstLinkMatch = item.description.match(/<A HREF=["']([^"']+)["']/i);
+    if (firstLinkMatch && firstLinkMatch[1] && !firstLinkMatch[1].includes('techmeme.com')) {
+      item.link = firstLinkMatch[1];
+    }
+  }
+  
   // Try to extract image
   const mediaContent = extractTag(itemXml, 'media:content');
   if (mediaContent) {
@@ -120,7 +130,12 @@ function extractTag(xml: string, tagName: string): string | null {
   const match = xml.match(regex);
   
   if (match && match[1]) {
-    return decodeHtmlEntities(match[1].trim());
+    let content = match[1].trim();
+    
+    // Strip CDATA sections
+    content = content.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
+    
+    return decodeHtmlEntities(content);
   }
   
   // Try self-closing or attribute format
@@ -154,10 +169,25 @@ function decodeHtmlEntities(text: string): string {
     '&quot;': '"',
     '&#39;': "'",
     '&apos;': "'",
-    '&nbsp;': ' '
+    '&nbsp;': ' ',
+    '&mdash;': '\u2014',
+    '&ndash;': '\u2013',
+    '&ldquo;': '\u201C',
+    '&rdquo;': '\u201D',
+    '&lsquo;': '\u2018',
+    '&rsquo;': '\u2019'
   };
 
-  return text.replace(/&[^;]+;/g, match => entities[match] || match);
+  // First handle named entities
+  let decoded = text.replace(/&[a-z]+;/gi, match => entities[match] || match);
+  
+  // Then handle numeric entities (e.g., &#8220; or &#x201c;)
+  decoded = decoded.replace(/&#(x?)([0-9a-f]+);/gi, (match, isHex, code) => {
+    const num = isHex ? parseInt(code, 16) : parseInt(code, 10);
+    return String.fromCharCode(num);
+  });
+  
+  return decoded;
 }
 
 /**

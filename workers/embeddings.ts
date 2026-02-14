@@ -39,17 +39,31 @@ export async function generateEmbedding(
 }
 
 /**
- * Generate embedding for an article (title + summary)
+ * Generate embedding for an article (title + summary + metadata)
  */
 export async function generateArticleEmbedding(
   ai: any,
-  article: Article
+  article: Article,
+  includeMetadata: boolean = true
 ): Promise<EmbeddingResult> {
-  // Combine title and summary for better context
-  const text = article.summary
-    ? `${article.title}. ${article.summary}`
-    : article.title;
-
+  // Build text components
+  const parts: string[] = [article.title];
+  
+  if (article.summary) {
+    parts.push(article.summary);
+  }
+  
+  // Add metadata for richer semantic context
+  if (includeMetadata) {
+    if (article.author) {
+      parts.push(`by ${article.author}`);
+    }
+    if ((article as any).source_name) {
+      parts.push(`from ${(article as any).source_name}`);
+    }
+  }
+  
+  const text = parts.join('. ');
   return generateEmbedding(ai, text);
 }
 
@@ -106,12 +120,15 @@ export async function findSimilarArticles(
 /**
  * Calculate content-based score boost
  * Compares new article against user's liked articles
+ * 
+ * @param strengthMultiplier - User preference 0.0-1.0 (weak to strong similarity impact)
  */
 export async function calculateContentScore(
   vectorize: any,
   articleEmbedding: number[],
   userLikedArticles: number[],
-  userDislikedArticles: number[]
+  userDislikedArticles: number[],
+  strengthMultiplier: number = 0.5
 ): Promise<number> {
   // Find similar articles
   const similar = await findSimilarArticles(vectorize, articleEmbedding, 20);
@@ -120,14 +137,19 @@ export async function calculateContentScore(
   let likeCount = 0;
   let dislikeCount = 0;
 
+  // Calculate dynamic boost/penalty range based on user preference
+  // strengthMultiplier 0.0 = weak (+10/-10), 0.5 = medium (+55/-55), 1.0 = strong (+100/-100)
+  const maxBoost = 10 + (strengthMultiplier * 90);    // 10 to 100
+  const maxPenalty = 10 + (strengthMultiplier * 90);  // 10 to 100
+
   for (const match of similar) {
     if (userLikedArticles.includes(match.articleId)) {
       // Similar to liked article - boost score
-      score += match.similarity * 50; // Scale to 0-50 points
+      score += match.similarity * maxBoost;
       likeCount++;
     } else if (userDislikedArticles.includes(match.articleId)) {
       // Similar to disliked article - reduce score
-      score -= match.similarity * 30; // Penalty 0-30 points
+      score -= match.similarity * maxPenalty;
       dislikeCount++;
     }
   }

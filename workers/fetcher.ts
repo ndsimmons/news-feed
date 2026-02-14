@@ -161,6 +161,21 @@ async function fetchFromSource(source: Source, env: Env): Promise<number> {
 }
 
 /**
+ * Normalize URL by removing CDATA wrappers and whitespace
+ */
+function normalizeUrl(url: string | undefined): string | undefined {
+  if (!url) return url;
+  
+  // Remove CDATA wrappers
+  let normalized = url.replace(/<!\[CDATA\[(.*?)\]\]>/g, '$1');
+  
+  // Trim whitespace
+  normalized = normalized.trim();
+  
+  return normalized;
+}
+
+/**
  * Fetch articles from RSS feed
  */
 async function fetchFromRSS(source: Source): Promise<Partial<Article>[]> {
@@ -177,7 +192,7 @@ async function fetchFromRSS(source: Source): Promise<Partial<Article>[]> {
   return feed.items.map(item => ({
     title: item.title,
     summary: item.description || null,
-    url: item.link,
+    url: normalizeUrl(item.link),
     published_at: item.pubDate ? parseRSSDate(item.pubDate)?.toISOString() : null,
     image_url: item.imageUrl || null,
     author: item.author || null,

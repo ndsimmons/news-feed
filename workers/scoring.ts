@@ -11,7 +11,8 @@ export function calculateArticleScore(
   article: Article,
   weights: ScoringWeights,
   hasVoted: boolean = false,
-  contentScore: number = 0 // NEW: embedding-based content similarity score
+  contentScore: number = 0, // NEW: embedding-based content similarity score
+  recencyDecayHours: number = 24 // User's recency preference (12, 24, 48, or 72)
 ): number {
   // Base score starts at 100
   let score = 100;
@@ -24,13 +25,13 @@ export function calculateArticleScore(
   const sourceWeight = weights.sources[article.source_id] || 1.0;
   score *= sourceWeight;
 
-  // 3. Recency bonus (newer = better)
+  // 3. Recency bonus (newer = better) - User-customizable decay
   const publishedAt = new Date(article.published_at);
   const now = new Date();
   const hoursOld = (now.getTime() - publishedAt.getTime()) / (1000 * 60 * 60);
   
-  // Decay over 72 hours (3 days), minimum multiplier of 0.2
-  const recencyMultiplier = Math.max(0.2, 1 - (hoursOld / 72));
+  // Decay over user's preference (default 24 hours), minimum multiplier of 0.1
+  const recencyMultiplier = Math.max(0.1, 1 - (hoursOld / recencyDecayHours));
   score *= recencyMultiplier;
 
   // 4. Content-based similarity boost (NEW!)
@@ -42,9 +43,9 @@ export function calculateArticleScore(
     score *= 0.1; // heavily penalize
   }
 
-  // 6. Boost very recent articles (< 2 hours old)
+  // 6. Boost very recent articles (< 2 hours old) - INCREASED BOOST
   if (hoursOld < 2) {
-    score *= 1.5; // 50% boost for fresh content
+    score *= 2.0; // 100% boost for fresh content (was 1.5)
   }
 
   return Math.round(score * 100) / 100; // Round to 2 decimal places
@@ -142,4 +143,105 @@ export function getTopArticles(
 ): Article[] {
   const scored = scoreAndSortArticles(articles, weights, votedArticleIds);
   return scored.slice(0, limit);
+}
+
+/**
+ * Diverse scoring for logged-out or first-time users
+ * Balances across categories and sources to show variety
+ * Prioritizes recency with max diversity
+ */
+export function calculateDiverseScore(
+  article: Article,
+  recencyDecayHours: number = 24,
+  seenSourceIds: Set<number> = new Set(),
+  seenCategoryIds: Set<number> = new Set()
+): number {
+  let score = 100;
+
+  // 1. Strong recency bias (newer = much better)
+  const publishedAt = new Date(article.published_at);
+  const now = new Date();
+  const hoursOld = (now.getTime() - publishedAt.getTime()) / (1000 * 60 * 60);
+  
+  // Exponential decay: very recent articles get big boost
+  const recencyMultiplier = Math.max(0.1, 1 - (hoursOld / recencyDecayHours));
+  score *= recencyMultiplier;
+
+  // 2. Massive boost for very fresh content (< 2 hours)
+  if (hoursOld < 2) {
+    score *= 2.5; // 150% boost for breaking news
+  }
+
+  // 3. Diversity bonus: reward unseen categories and sources
+  // This ensures variety across the feed
+  if (!seenCategoryIds.has(article.category_id)) {
+    score *= 1.3; // 30% bonus for new category
+  }
+  
+  if (!seenSourceIds.has(article.source_id)) {
+    score *= 1.2; // 20% bonus for new source
+  }
+
+  return Math.round(score * 100) / 100;
+}
+
+/**
+ * Score and sort articles for diverse feed (logged-out/new users)
+ * Ensures balanced distribution across categories and sources
+ */
+export function scoreAndSortArticlesDiverse(
+  articles: Article[],
+  recencyDecayHours: number = 24
+): Article[] {
+  const seenSourceIds = new Set<number>();
+  const seenCategoryIds = new Set<number>();
+  
+  // Score all articles
+  const scoredArticles = articles.map(article => ({
+    ...article,
+    score: calculateDiverseScore(
+      article,
+      recencyDecayHours,
+      seenSourceIds,
+      seenCategoryIds
+    )
+  }));
+
+  // Sort by score
+  scoredArticles.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+  // Apply diversity: re-rank to ensure category/source variety
+  const diverseArticles: Article[] = [];
+  const articlePool = [...scoredArticles];
+  
+  while (articlePool.length > 0 && diverseArticles.length < 100) {
+    // Find next article that maximizes diversity
+    let bestIndex = 0;
+    let bestScore = -1;
+    
+    for (let i = 0; i < Math.min(articlePool.length, 10); i++) {
+      const article = articlePool[i];
+      let diversityScore = article.score || 0;
+      
+      // Heavy bonus for unseen categories/sources
+      if (!seenCategoryIds.has(article.category_id)) {
+        diversityScore *= 1.5;
+      }
+      if (!seenSourceIds.has(article.source_id)) {
+        diversityScore *= 1.3;
+      }
+      
+      if (diversityScore > bestScore) {
+        bestScore = diversityScore;
+        bestIndex = i;
+      }
+    }
+    
+    const selectedArticle = articlePool.splice(bestIndex, 1)[0];
+    diverseArticles.push(selectedArticle);
+    seenCategoryIds.add(selectedArticle.category_id);
+    seenSourceIds.add(selectedArticle.source_id);
+  }
+
+  return diverseArticles;
 }

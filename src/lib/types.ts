@@ -48,11 +48,13 @@ export interface Article {
   image_url?: string;
   author?: string;
   content?: string;
-  // Computed/joined fields
-  source?: Source;
-  category?: Category;
+  // Computed/joined fields from API
+  source_name?: string;
+  category_name?: string;
+  category_slug?: string;
   score?: number;
   userVote?: number; // -1, 0, 1
+  contentScore?: number;
 }
 
 export interface Vote {

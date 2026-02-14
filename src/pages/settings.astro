@@ -3,118 +3,799 @@ import Layout from '../layouts/Layout.astro';
 ---
 
 <Layout title="Settings - NewsFeed">
-  <div class="max-w-5xl mx-auto px-4 py-8">
-    <h1 class="text-3xl font-bold text-gray-900 mb-8">Settings</h1>
+  <div class="flex min-h-screen bg-gray-50">
+    <!-- Mobile Menu Button -->
+    <button 
+      id="mobile-menu-btn"
+      class="md:hidden fixed top-4 left-4 z-50 p-2 bg-white rounded-lg shadow-lg border border-gray-200"
+      aria-label="Toggle menu"
+    >
+      <svg class="w-6 h-6 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
+      </svg>
+    </button>
 
-    <div class="space-y-8">
-      <!-- Sources Section -->
-      <section class="bg-white border border-gray-200 rounded-lg p-6">
-        <h2 class="text-xl font-bold text-gray-900 mb-4">News Sources</h2>
-        <p class="text-gray-600 mb-4">
-          Manage which sources are active and configure their settings.
-        </p>
-        
-        <div class="space-y-4" id="sources-list">
-          <div class="text-center py-8 text-gray-500">
-            Loading sources...
-          </div>
-        </div>
-      </section>
+    <!-- Overlay for mobile -->
+    <div id="mobile-overlay" class="md:hidden hidden fixed inset-0 bg-black bg-opacity-50 z-30"></div>
 
-      <!-- Categories Section -->
-      <section class="bg-white border border-gray-200 rounded-lg p-6">
-        <h2 class="text-xl font-bold text-gray-900 mb-4">Categories</h2>
-        <p class="text-gray-600 mb-4">
-          Your interest categories and their current weights.
-        </p>
-        
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div class="p-4 bg-blue-50 rounded border border-blue-200">
-            <h3 class="font-bold text-blue-900">Tech/AI</h3>
-            <p class="text-sm text-gray-600 mt-1">Weight: 1.0</p>
-          </div>
-          <div class="p-4 bg-green-50 rounded border border-green-200">
-            <h3 class="font-bold text-green-900">Business/Finance</h3>
-            <p class="text-sm text-gray-600 mt-1">Weight: 1.0</p>
-          </div>
-          <div class="p-4 bg-yellow-50 rounded border border-yellow-200">
-            <h3 class="font-bold text-yellow-900">Sports</h3>
-            <p class="text-sm text-gray-600 mt-1">Weight: 1.0</p>
-          </div>
-          <div class="p-4 bg-purple-50 rounded border border-purple-200">
-            <h3 class="font-bold text-purple-900">Politics</h3>
-            <p class="text-sm text-gray-600 mt-1">Weight: 1.0</p>
-          </div>
-        </div>
-        
-        <p class="text-xs text-gray-500 mt-4">
-          💡 Weights are automatically adjusted based on your voting behavior. Upvoted categories get higher weights.
-        </p>
-      </section>
+    <!-- Side Navigation -->
+    <aside id="sidebar" class="w-64 bg-white border-r border-gray-200 fixed h-full z-40 
+                              -translate-x-full md:translate-x-0 transition-transform duration-300">
+      <div class="p-6">
+        <h1 class="text-2xl font-bold text-gray-900 mb-6">Settings</h1>
+        <nav class="space-y-1">
+          <button
+            data-section="news-sources"
+            class="settings-nav-item w-full text-left px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-100 transition-colors active"
+          >
+            News Sources
+          </button>
+          <button
+            data-section="algorithm"
+            class="settings-nav-item w-full text-left px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-100 transition-colors"
+          >
+            Algorithm Preferences
+          </button>
+          <button
+            data-section="about"
+            class="settings-nav-item w-full text-left px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-100 transition-colors"
+          >
+            About
+          </button>
+        </nav>
+      </div>
+      <div class="absolute bottom-4 left-6">
+        <a href="/" class="text-sm text-gray-600 hover:text-gray-900">
+          ← Back to Feed
+        </a>
+      </div>
+    </aside>
 
-      <!-- About Section -->
-      <section class="bg-white border border-gray-200 rounded-lg p-6">
-        <h2 class="text-xl font-bold text-gray-900 mb-4">About</h2>
-        <div class="prose prose-sm text-gray-600">
-          <p>
-            This is a personalized news aggregation platform that learns from your preferences.
-            The more you vote on articles, the better the recommendations become.
+    <!-- Main Content -->
+    <main class="md:ml-64 flex-1 p-8 pt-20 md:pt-8">
+      <div class="max-w-4xl">
+        <!-- News Sources Section -->
+        <section id="section-news-sources" class="settings-section">
+          <h2 class="text-3xl font-bold text-gray-900 mb-2">News Sources</h2>
+          <p class="text-gray-600 mb-8">
+            Toggle sources on and off to customize your feed. Disabled sources won't appear in your feed.
           </p>
-          <h3 class="text-base font-bold text-gray-900 mt-4 mb-2">How it works:</h3>
-          <ul class="space-y-1">
-            <li>Articles are fetched from RSS feeds and APIs every hour</li>
-            <li>A scoring algorithm ranks articles based on your interests</li>
-            <li>Upvoting boosts similar content from that source/category</li>
-            <li>Downvoting reduces similar content</li>
-            <li>Fresher content is prioritized</li>
-          </ul>
-        </div>
-      </section>
-    </div>
+          
+          <div id="sources-by-category" class="space-y-6">
+            <div class="text-center py-8 text-gray-500">
+              Loading sources...
+            </div>
+          </div>
+        </section>
+
+        <!-- Algorithm Preferences Section -->
+        <section id="section-algorithm" class="settings-section hidden">
+          <h2 class="text-3xl font-bold text-gray-900 mb-2">Algorithm Preferences</h2>
+          <p class="text-gray-600 mb-6">
+            Customize how the recommendation algorithm ranks and displays articles.
+          </p>
+
+          <!-- Profile Selector -->
+          <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+            <div class="flex items-center justify-between">
+              <div>
+                <label for="profile-select" class="block text-sm font-medium text-gray-900 mb-1">
+                  Active Profile
+                </label>
+                <p class="text-xs text-gray-600">
+                  Switch between different algorithm configurations
+                </p>
+              </div>
+              <div class="flex gap-2">
+                <select 
+                  id="profile-select" 
+                  class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="">Loading profiles...</option>
+                </select>
+                <button 
+                  id="new-profile-btn"
+                  class="px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-colors text-sm"
+                  title="Create new profile"
+                >
+                  + New
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Categories Info -->
+          <div class="bg-white border border-gray-200 rounded-lg p-6 mb-6">
+            <h3 class="text-lg font-bold text-gray-900 mb-3">Your Categories</h3>
+            <p class="text-sm text-gray-600 mb-4">
+              Category weights are automatically adjusted based on your voting behavior.
+            </p>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div class="p-4 bg-blue-50 rounded border border-blue-200">
+                <h4 class="font-bold text-blue-900">Tech/AI</h4>
+                <p class="text-sm text-gray-600 mt-1">Weight: Dynamic</p>
+              </div>
+              <div class="p-4 bg-green-50 rounded border border-green-200">
+                <h4 class="font-bold text-green-900">Business/Finance</h4>
+                <p class="text-sm text-gray-600 mt-1">Weight: Dynamic</p>
+              </div>
+              <div class="p-4 bg-yellow-50 rounded border border-yellow-200">
+                <h4 class="font-bold text-yellow-900">Sports</h4>
+                <p class="text-sm text-gray-600 mt-1">Weight: Dynamic</p>
+              </div>
+              <div class="p-4 bg-purple-50 rounded border border-purple-200">
+                <h4 class="font-bold text-purple-900">Politics</h4>
+                <p class="text-sm text-gray-600 mt-1">Weight: Dynamic</p>
+              </div>
+              <div class="p-4 bg-pink-50 rounded border border-pink-200">
+                <h4 class="font-bold text-pink-900">Arts/Culture</h4>
+                <p class="text-sm text-gray-600 mt-1">Weight: Dynamic</p>
+              </div>
+            </div>
+            
+            <p class="text-xs text-gray-500 mt-4">
+              💡 Upvoting articles boosts their category weight. Downvoting reduces it.
+            </p>
+          </div>
+          
+          <!-- Algorithm Sliders -->
+          <div class="bg-white border border-gray-200 rounded-lg p-6 space-y-6">
+            <h3 class="text-lg font-bold text-gray-900 mb-3">Ranking Preferences</h3>
+
+            <!-- Recency Slider -->
+            <div>
+              <label for="recency-slider" class="block text-sm font-medium text-gray-900 mb-2">
+                Recency Preference
+              </label>
+              <div class="flex items-center gap-4">
+                <span class="text-xs text-gray-500">Balanced</span>
+                <input 
+                  type="range" 
+                  id="recency-slider" 
+                  min="12" 
+                  max="72" 
+                  step="12" 
+                  value="24"
+                  class="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                />
+                <span class="text-xs text-gray-500">Evergreen</span>
+              </div>
+              <div class="mt-2 text-sm text-gray-600">
+                Current: <span id="recency-display" class="font-medium text-blue-600">24 hours</span>
+                <span class="text-xs text-gray-500 ml-2">(how quickly articles lose relevance)</span>
+              </div>
+              <div class="mt-3 text-xs text-gray-500">
+                <strong>12h:</strong> Only very fresh articles (fast-paced)<br>
+                <strong>24h:</strong> Balanced - fresh but not too aggressive<br>
+                <strong>48h:</strong> Longer shelf life - good for daily check-ins<br>
+                <strong>72h:</strong> Evergreen - articles stay relevant for days
+              </div>
+            </div>
+
+            <!-- Source Boost Slider -->
+            <div>
+              <label for="source-boost-slider" class="block text-sm font-medium text-gray-900 mb-2">
+                Source Variety
+              </label>
+              <div class="flex items-center gap-4">
+                <span class="text-xs text-gray-500">Max Variety</span>
+                <input 
+                  type="range" 
+                  id="source-boost-slider" 
+                  min="0" 
+                  max="1" 
+                  step="0.1" 
+                  value="0.5" 
+                  class="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                >
+                <span class="text-xs text-gray-500">Less Variety</span>
+              </div>
+              <div class="mt-2 text-sm text-gray-600">
+                Current: <span id="source-boost-display" class="font-medium text-blue-600">Balanced (0.5)</span>
+                <span class="text-xs text-gray-500 ml-2">(controls source diversity in feed)</span>
+              </div>
+              <div class="mt-3 text-xs text-gray-500">
+                <strong>0.0 - 0.3:</strong> Maximum diversity - rarely see the same source twice<br>
+                <strong>0.4 - 0.6:</strong> Balanced - good mix of sources<br>
+                <strong>0.7 - 1.0:</strong> Less variety - more from sources you like
+              </div>
+            </div>
+
+            <!-- Include Metadata Toggle -->
+            <div>
+              <label for="metadata-toggle" class="flex items-center justify-between cursor-pointer">
+                <div>
+                  <span class="block text-sm font-medium text-gray-900">Include Author/Source in Recommendations</span>
+                  <span class="block text-xs text-gray-500 mt-1">Embeddings will consider author and publication context</span>
+                </div>
+                <div class="relative inline-block w-12 h-6 transition duration-200 ease-in-out">
+                  <input
+                    type="checkbox"
+                    id="metadata-toggle"
+                    checked
+                    class="absolute w-full h-full opacity-0 cursor-pointer peer"
+                  />
+                  <div class="w-12 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                </div>
+              </label>
+              <div class="mt-2 text-xs text-gray-500">
+                When enabled, recommendations will factor in article authors and publication names for better personalization.
+              </div>
+            </div>
+
+            <!-- Similarity Strength Slider -->
+            <div>
+              <label for="similarity-slider" class="block text-sm font-medium text-gray-900 mb-2">
+                Content Similarity Strength
+              </label>
+              <div class="flex items-center gap-4">
+                <span class="text-xs text-gray-500">Subtle</span>
+                <input 
+                  type="range" 
+                  id="similarity-slider" 
+                  min="0" 
+                  max="1" 
+                  step="0.1" 
+                  value="0.5" 
+                  class="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                >
+                <span class="text-xs text-gray-500">Strong</span>
+              </div>
+              <div class="mt-2 text-sm text-gray-600">
+                Current: <span id="similarity-display" class="font-medium text-blue-600">Medium (0.5)</span>
+                <span class="text-xs text-gray-500 ml-2">(how much upvotes/downvotes affect recommendations)</span>
+              </div>
+              <div class="mt-3 text-xs text-gray-500">
+                <strong>0.0 - 0.3:</strong> Subtle influence (+10 to +37 points)<br>
+                <strong>0.4 - 0.6:</strong> Medium influence (+46 to +64 points)<br>
+                <strong>0.7 - 1.0:</strong> Strong influence (+73 to +100 points)
+              </div>
+            </div>
+
+            <!-- Exploration Factor Slider -->
+            <div>
+              <label for="exploration-slider" class="block text-sm font-medium text-gray-900 mb-2">
+                Content Exploration
+              </label>
+              <div class="flex items-center gap-4">
+                <span class="text-xs text-gray-500">Familiar</span>
+                <input 
+                  type="range" 
+                  id="exploration-slider" 
+                  min="0" 
+                  max="0.5" 
+                  step="0.05" 
+                  value="0.1" 
+                  class="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                >
+                <span class="text-xs text-gray-500">Exploratory</span>
+              </div>
+              <div class="mt-2 text-sm text-gray-600">
+                Current: <span id="exploration-display" class="font-medium text-blue-600">10%</span>
+                <span class="text-xs text-gray-500 ml-2">(percentage of feed from outside your usual preferences)</span>
+              </div>
+              <div class="mt-3 text-xs text-gray-500">
+                <strong>0%:</strong> Only show highly relevant content<br>
+                <strong>10-20%:</strong> Occasionally introduce new topics<br>
+                <strong>30-50%:</strong> Actively explore diverse content
+              </div>
+            </div>
+            
+            <button 
+              id="save-preferences" 
+              class="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors"
+            >
+              Save Preferences
+            </button>
+            
+            <div id="save-status" class="text-sm hidden"></div>
+          </div>
+        </section>
+
+        <!-- About Section -->
+        <section id="section-about" class="settings-section hidden">
+          <h2 class="text-3xl font-bold text-gray-900 mb-2">About</h2>
+          <p class="text-gray-600 mb-8">
+            How your personalized news feed works.
+          </p>
+
+          <div class="bg-white border border-gray-200 rounded-lg p-6 prose prose-sm max-w-none">
+            <p class="text-gray-700">
+              This is a personalized news aggregation platform that learns from your preferences.
+              The more you interact with articles, the better the recommendations become.
+            </p>
+            
+            <h3 class="text-base font-bold text-gray-900 mt-6 mb-3">How it works:</h3>
+            <ul class="space-y-2 text-gray-700">
+              <li>Articles are fetched from RSS feeds every hour</li>
+              <li>A machine learning algorithm ranks articles based on your interests</li>
+              <li>Upvoting an article boosts similar content from that source and category</li>
+              <li>Downvoting reduces similar content</li>
+              <li>Article visibility tracking prevents showing the same content repeatedly</li>
+              <li>Source diversity ensures you see a good mix of perspectives</li>
+            </ul>
+
+            <h3 class="text-base font-bold text-gray-900 mt-6 mb-3">Technology:</h3>
+            <ul class="space-y-2 text-gray-700">
+              <li><strong>Frontend:</strong> Astro + React + TypeScript</li>
+              <li><strong>Backend:</strong> Cloudflare Workers (edge computing)</li>
+              <li><strong>Database:</strong> Cloudflare D1 (SQLite)</li>
+              <li><strong>ML:</strong> Cloudflare Workers AI + Vectorize (embeddings)</li>
+              <li><strong>Hosting:</strong> Cloudflare Pages</li>
+            </ul>
+
+            <div class="mt-8 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <p class="text-sm text-gray-700 mb-0">
+                <strong>Version:</strong> 1.0.0<br>
+                <strong>Last Updated:</strong> February 2026
+              </p>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
   </div>
 </Layout>
+
+<style>
+  .settings-nav-item.active {
+    background-color: rgb(239 246 255);
+    color: rgb(29 78 216);
+    font-weight: 500;
+  }
+</style>
 
 <script>
   // API Configuration
   const API_BASE_URL = import.meta.env.PUBLIC_API_URL || 'https://news-feed-api.nsimmons.workers.dev';
   
-  // Fetch and display sources
+  // Navigation
+  const navItems = document.querySelectorAll('.settings-nav-item');
+  const sections = document.querySelectorAll('.settings-section');
+
+  navItems.forEach(item => {
+    item.addEventListener('click', () => {
+      const sectionId = item.getAttribute('data-section');
+      
+      // Update nav active state
+      navItems.forEach(nav => nav.classList.remove('active'));
+      item.classList.add('active');
+      
+      // Show selected section
+      sections.forEach(section => section.classList.add('hidden'));
+      document.getElementById(`section-${sectionId}`)?.classList.remove('hidden');
+      
+      // Close mobile menu after selection
+      closeMobileMenu();
+    });
+  });
+
+  // Mobile menu handling
+  const mobileMenuBtn = document.getElementById('mobile-menu-btn');
+  const sidebar = document.getElementById('sidebar');
+  const mobileOverlay = document.getElementById('mobile-overlay');
+
+  function openMobileMenu() {
+    sidebar?.classList.remove('-translate-x-full');
+    mobileOverlay?.classList.remove('hidden');
+  }
+
+  function closeMobileMenu() {
+    sidebar?.classList.add('-translate-x-full');
+    mobileOverlay?.classList.add('hidden');
+  }
+
+  mobileMenuBtn?.addEventListener('click', () => {
+    if (sidebar?.classList.contains('-translate-x-full')) {
+      openMobileMenu();
+    } else {
+      closeMobileMenu();
+    }
+  });
+
+  mobileOverlay?.addEventListener('click', closeMobileMenu);
+
+  // Fetch and display sources grouped by category
   async function loadSources() {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/sources`);
-      const sources = await response.json();
+      const token = localStorage.getItem('auth_token');
+      let endpoint = token ? '/api/user-sources' : '/api/sources';
+      const headers: HeadersInit = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      let response = await fetch(`${API_BASE_URL}${endpoint}`, { headers });
       
-      const listEl = document.getElementById('sources-list');
-      if (!listEl) return;
-      
-      if (sources.length === 0) {
-        listEl.innerHTML = '<p class="text-gray-500 text-center">No sources configured</p>';
-        return;
+      // If user-sources fails (401), fallback to public sources endpoint
+      if (!response.ok && endpoint === '/api/user-sources') {
+        response = await fetch(`${API_BASE_URL}/api/sources`);
       }
       
-      listEl.innerHTML = sources.map((source: any) => `
-        <div class="flex items-center justify-between p-4 border border-gray-200 rounded">
-          <div class="flex-1">
-            <h3 class="font-bold text-gray-900">${source.name}</h3>
-            <p class="text-sm text-gray-600">${source.category_name} • ${source.fetch_method}</p>
-            <p class="text-xs text-gray-500 mt-1">${source.url}</p>
-          </div>
-          <div class="flex items-center gap-3">
-            <span class="text-sm ${source.active ? 'text-green-600' : 'text-gray-400'}">
-              ${source.active ? '✓ Active' : '✗ Inactive'}
-            </span>
+      const data = await response.json();
+      const sources = data.sources || [];
+      
+      const container = document.getElementById('sources-by-category');
+      if (!container) return;
+      
+      if (sources.length === 0) {
+        container.innerHTML = '<p class="text-gray-500 text-center">No sources configured</p>';
+        return;
+      }
+
+      // Group by category
+      const grouped = sources.reduce((acc: any, source: any) => {
+        const cat = source.category_name || 'Other';
+        if (!acc[cat]) acc[cat] = [];
+        acc[cat].push(source);
+        return acc;
+      }, {});
+
+      container.innerHTML = Object.keys(grouped).sort().map(category => `
+        <div class="bg-white border border-gray-200 rounded-lg p-6">
+          <h3 class="text-lg font-bold text-gray-900 mb-4">${category}</h3>
+          <div class="space-y-3">
+            ${grouped[category].map((source: any) => `
+              <div class="flex items-center justify-between p-3 border border-gray-200 rounded-lg">
+                <div class="flex-1">
+                  <h4 class="font-medium text-gray-900">${source.name}</h4>
+                  <p class="text-xs text-gray-500 mt-1">${source.url || ''}</p>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    ${source.user_active === 1 || source.user_active === undefined ? 'checked' : ''}
+                    data-source-id="${source.id}"
+                    class="sr-only peer source-toggle"
+                  >
+                  <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                </label>
+              </div>
+            `).join('')}
           </div>
         </div>
       `).join('');
+
+      // Add event listeners to toggles
+      const toggles = document.querySelectorAll('.source-toggle');
+      toggles.forEach(toggle => {
+        toggle.addEventListener('change', handleSourceToggle);
+      });
     } catch (error) {
       console.error('Error loading sources:', error);
-      const listEl = document.getElementById('sources-list');
-      if (listEl) {
-        listEl.innerHTML = '<p class="text-red-500 text-center">Error loading sources</p>';
+      const container = document.getElementById('sources-by-category');
+      if (container) {
+        container.innerHTML = '<p class="text-red-500 text-center">Error loading sources</p>';
       }
     }
   }
-  
-  // Load on page load
+
+  // Handle source toggle
+  async function handleSourceToggle(e: Event) {
+    const checkbox = e.target as HTMLInputElement;
+    const sourceId = parseInt(checkbox.getAttribute('data-source-id') || '0');
+    const isActive = checkbox.checked;
+
+    try {
+      const token = localStorage.getItem('auth_token');
+      if (!token) {
+        alert('Please log in to change source preferences');
+        checkbox.checked = !isActive; // Revert
+        return;
+      }
+
+      // Get all current toggles
+      const toggles = document.querySelectorAll('.source-toggle');
+      const sources = Array.from(toggles).map(toggle => ({
+        id: parseInt((toggle as HTMLInputElement).getAttribute('data-source-id') || '0'),
+        active: (toggle as HTMLInputElement).checked
+      }));
+
+      const response = await fetch(`${API_BASE_URL}/api/user-sources`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ sources })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to save');
+      }
+    } catch (error) {
+      console.error('Error saving source preference:', error);
+      alert('Error saving preference. Please try again.');
+      checkbox.checked = !isActive; // Revert on error
+    }
+  }
+
+  // Load sources on page load
   loadSources();
+
+  // Algorithm Preferences Slider Logic
+  const recencySlider = document.getElementById('recency-slider') as HTMLInputElement;
+  const recencyDisplay = document.getElementById('recency-display');
+  const sourceBoostSlider = document.getElementById('source-boost-slider') as HTMLInputElement;
+  const sourceBoostDisplay = document.getElementById('source-boost-display');
+  const metadataToggle = document.getElementById('metadata-toggle') as HTMLInputElement;
+  const similaritySlider = document.getElementById('similarity-slider') as HTMLInputElement;
+  const similarityDisplay = document.getElementById('similarity-display');
+  const explorationSlider = document.getElementById('exploration-slider') as HTMLInputElement;
+  const explorationDisplay = document.getElementById('exploration-display');
+  const saveButton = document.getElementById('save-preferences');
+  const saveStatus = document.getElementById('save-status');
+
+  // Update display when recency slider changes
+  recencySlider?.addEventListener('input', (e) => {
+    const value = (e.target as HTMLInputElement).value;
+    if (recencyDisplay) {
+      recencyDisplay.textContent = `${value} hours`;
+    }
+  });
+
+  // Update display when source boost slider changes
+  sourceBoostSlider?.addEventListener('input', (e) => {
+    const value = parseFloat((e.target as HTMLInputElement).value);
+    if (sourceBoostDisplay) {
+      let label = 'Balanced';
+      if (value <= 0.3) label = 'Max Variety';
+      else if (value <= 0.6) label = 'Balanced';
+      else label = 'Less Variety';
+      sourceBoostDisplay.textContent = `${label} (${value.toFixed(1)})`;
+    }
+  });
+
+  // Update display when similarity slider changes
+  similaritySlider?.addEventListener('input', (e) => {
+    const value = parseFloat((e.target as HTMLInputElement).value);
+    if (similarityDisplay) {
+      let label = 'Medium';
+      if (value <= 0.3) label = 'Subtle';
+      else if (value <= 0.6) label = 'Medium';
+      else label = 'Strong';
+      similarityDisplay.textContent = `${label} (${value.toFixed(1)})`;
+    }
+  });
+
+  // Update display when exploration slider changes
+  explorationSlider?.addEventListener('input', (e) => {
+    const value = parseFloat((e.target as HTMLInputElement).value);
+    if (explorationDisplay) {
+      explorationDisplay.textContent = `${Math.round(value * 100)}%`;
+    }
+  });
+
+  // Load user's current preference
+  async function loadPreferences() {
+    try {
+      const token = localStorage.getItem('auth_token');
+      if (!token) return;
+
+      const response = await fetch(`${API_BASE_URL}/api/preferences`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (response.ok) {
+        const prefs = await response.json();
+        
+        // Load recency preference
+        if (recencySlider && prefs.recency_decay_hours) {
+          recencySlider.value = prefs.recency_decay_hours.toString();
+          if (recencyDisplay) {
+            recencyDisplay.textContent = `${prefs.recency_decay_hours} hours`;
+          }
+        }
+
+        // Load source boost preference
+        if (sourceBoostSlider && prefs.source_diversity_multiplier !== undefined) {
+          sourceBoostSlider.value = prefs.source_diversity_multiplier.toString();
+          if (sourceBoostDisplay) {
+            const value = prefs.source_diversity_multiplier;
+            let label = 'Balanced';
+            if (value <= 0.3) label = 'Max Variety';
+            else if (value <= 0.6) label = 'Balanced';
+            else label = 'Less Variety';
+            sourceBoostDisplay.textContent = `${label} (${value.toFixed(1)})`;
+          }
+        }
+
+        // Load metadata toggle
+        if (metadataToggle && prefs.include_metadata_in_embeddings !== undefined) {
+          metadataToggle.checked = prefs.include_metadata_in_embeddings === 1;
+        }
+
+        // Load similarity strength
+        if (similaritySlider && prefs.dynamic_similarity_strength !== undefined) {
+          similaritySlider.value = prefs.dynamic_similarity_strength.toString();
+          if (similarityDisplay) {
+            const value = prefs.dynamic_similarity_strength;
+            let label = 'Medium';
+            if (value <= 0.3) label = 'Subtle';
+            else if (value <= 0.6) label = 'Medium';
+            else label = 'Strong';
+            similarityDisplay.textContent = `${label} (${value.toFixed(1)})`;
+          }
+        }
+
+        // Load exploration factor
+        if (explorationSlider && prefs.exploration_factor !== undefined) {
+          explorationSlider.value = prefs.exploration_factor.toString();
+          if (explorationDisplay) {
+            explorationDisplay.textContent = `${Math.round(prefs.exploration_factor * 100)}%`;
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error loading preferences:', error);
+    }
+  }
+
+  // Save preferences
+  saveButton?.addEventListener('click', async () => {
+    try {
+      const token = localStorage.getItem('auth_token');
+      if (!token) {
+        if (saveStatus) {
+          saveStatus.textContent = 'Please log in to save preferences';
+          saveStatus.className = 'text-sm text-red-600';
+          saveStatus.classList.remove('hidden');
+        }
+        return;
+      }
+
+      const recencyValue = recencySlider?.value;
+      const sourceBoostValue = sourceBoostSlider?.value;
+      const metadataValue = metadataToggle?.checked;
+      const similarityValue = similaritySlider?.value;
+      const explorationValue = explorationSlider?.value;
+      
+      const response = await fetch(`${API_BASE_URL}/api/preferences`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          recency_decay_hours: parseInt(recencyValue || '24'),
+          source_diversity_multiplier: parseFloat(sourceBoostValue || '0.5'),
+          include_metadata_in_embeddings: metadataValue !== false,
+          dynamic_similarity_strength: parseFloat(similarityValue || '0.5'),
+          exploration_factor: parseFloat(explorationValue || '0.1')
+        })
+      });
+
+      if (response.ok) {
+        if (saveStatus) {
+          saveStatus.textContent = '✓ Preferences saved successfully!';
+          saveStatus.className = 'text-sm text-green-600';
+          saveStatus.classList.remove('hidden');
+          setTimeout(() => saveStatus.classList.add('hidden'), 3000);
+        }
+      } else {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || 'Failed to save');
+      }
+    } catch (error) {
+      console.error('Error saving preferences:', error);
+      if (saveStatus) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        saveStatus.textContent = `✗ Error: ${errorMessage}`;
+        saveStatus.className = 'text-sm text-red-600';
+        saveStatus.classList.remove('hidden');
+      }
+    }
+  });
+
+  loadPreferences();
+
+  // Profile management
+  const profileSelect = document.getElementById('profile-select') as HTMLSelectElement;
+  const newProfileBtn = document.getElementById('new-profile-btn');
+  let currentProfiles: any[] = [];
+
+  // Load profiles
+  async function loadProfiles() {
+    try {
+      const token = localStorage.getItem('auth_token');
+      if (!token) {
+        if (profileSelect) {
+          profileSelect.innerHTML = '<option value="">Login to use profiles</option>';
+          profileSelect.disabled = true;
+        }
+        return;
+      }
+
+      const response = await fetch(`${API_BASE_URL}/api/profiles`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        currentProfiles = data.profiles || [];
+
+        if (profileSelect && currentProfiles.length > 0) {
+          profileSelect.innerHTML = currentProfiles.map((p: any) => 
+            `<option value="${p.id}" ${p.is_active ? 'selected' : ''}>${p.name}</option>`
+          ).join('');
+          profileSelect.disabled = false;
+        }
+      }
+    } catch (error) {
+      console.error('Error loading profiles:', error);
+    }
+  }
+
+  // Switch profile
+  profileSelect?.addEventListener('change', async (e) => {
+    const profileId = parseInt((e.target as HTMLSelectElement).value);
+    if (!profileId) return;
+
+    try {
+      const token = localStorage.getItem('auth_token');
+      if (!token) return;
+
+      const response = await fetch(`${API_BASE_URL}/api/profiles/${profileId}/activate`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      if (response.ok) {
+        // Reload preferences to show new profile settings
+        await loadPreferences();
+        alert('Profile activated! Refresh your feed to see changes.');
+      }
+    } catch (error) {
+      console.error('Error activating profile:', error);
+      alert('Failed to activate profile');
+    }
+  });
+
+  // Create new profile
+  newProfileBtn?.addEventListener('click', async () => {
+    const profileName = prompt('Enter profile name:');
+    if (!profileName || profileName.trim() === '') return;
+
+    try {
+      const token = localStorage.getItem('auth_token');
+      if (!token) {
+        alert('Please log in to create profiles');
+        return;
+      }
+
+      // Get current settings to copy to new profile
+      const currentSettings = {
+        recency_decay_hours: parseInt(recencySlider?.value || '24'),
+        source_diversity_multiplier: parseFloat(sourceBoostSlider?.value || '0.5'),
+        include_metadata_in_embeddings: metadataToggle?.checked !== false,
+        dynamic_similarity_strength: parseFloat(similaritySlider?.value || '0.5'),
+        exploration_factor: parseFloat(explorationSlider?.value || '0.1')
+      };
+
+      const response = await fetch(`${API_BASE_URL}/api/profiles`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          name: profileName.trim(),
+          description: 'Custom profile',
+          settings: currentSettings
+        })
+      });
+
+      if (response.ok) {
+        await loadProfiles();
+        alert(`Profile "${profileName}" created!`);
+      } else {
+        const error = await response.json();
+        alert(error.error || 'Failed to create profile');
+      }
+    } catch (error) {
+      console.error('Error creating profile:', error);
+      alert('Failed to create profile');
+    }
+  });
+
+  loadProfiles();
 </script>
