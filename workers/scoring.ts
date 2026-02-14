@@ -297,15 +297,15 @@ export function calculateAdoptionScore(
   const sourceWeight = weights.sources[article.source_id] || 1.0;
   score *= categoryWeight * sourceWeight;
 
-  // 4. DIVERSITY bonus: reward unseen categories and sources (but smaller than personalization)
-  // This ensures variety across the feed while still personalizing
-  if (!seenCategoryIds.has(article.category_id)) {
-    score *= 1.5; // 50% bonus for new category
-  }
-  
-  if (!seenSourceIds.has(article.source_id)) {
-    score *= 1.3; // 30% bonus for new source
-  }
+   // 4. DIVERSITY bonus: reward unseen categories and sources
+   // ADDITIVE (not multiplicative) to preserve score differentiation between articles
+   if (!seenCategoryIds.has(article.category_id)) {
+     score += 15; // Fixed bonus for new category
+   }
+   
+   if (!seenSourceIds.has(article.source_id)) {
+     score += 10; // Fixed bonus for new source
+   }
 
   // 5. Add fine-grained time variance to prevent clustering
   // Uses minutes/seconds of publish time to create natural variance
