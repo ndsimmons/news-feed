@@ -161,6 +161,8 @@ export default function SavedArticles() {
                 onVote={handleVote}
                 isAuthenticated={isAuthenticated}
                 userId={user?.id || 1}
+                isSavedView={true}
+                onArticleRemoved={handleArticleRemoved}
               />
             ))}
           </div>

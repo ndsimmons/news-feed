@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import FeedCard from './FeedCard';
 import CategoryFilter from './CategoryFilter';
 import AuthModal from './AuthModal';
+import CelebrationModal from './CelebrationModal';
 import type { Article, FeedResponse } from '../lib/types';
 import { API_BASE_URL } from '../lib/config';
 import { useAuth } from '../lib/auth';
@@ -17,9 +18,16 @@ export default function ArticleList() {
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showCelebration, setShowCelebration] = useState(false);
+  
+  // Debug: Log when celebration modal state changes
+  useEffect(() => {
+    console.log('ArticleList: showCelebration state changed to:', showCelebration);
+  }, [showCelebration]);
   const [seenArticles, setSeenArticles] = useState<Set<number>>(new Set());
   const [pendingImpressions, setPendingImpressions] = useState<Set<number>>(new Set());
   const [lastFetchTime, setLastFetchTime] = useState<number>(Date.now());
+  const [voteCount, setVoteCount] = useState(0);
 
   useEffect(() => {
     setPage(1);
@@ -32,6 +40,69 @@ export default function ArticleList() {
       console.log('Refresh trigger failed:', err)
     );
   }, [category]);
+
+  // Fetch vote count when authenticated
+  useEffect(() => {
+    if (isAuthenticated && user) {
+      const fetchVoteCount = async () => {
+        try {
+          const response = await fetch(`${API_BASE_URL}/api/user/stats?userId=${user.id}`);
+          if (response.ok) {
+            const data = await response.json();
+            setVoteCount(data.voteCount || 0);
+          }
+        } catch (error) {
+          console.error('Error fetching vote count:', error);
+        }
+      };
+      fetchVoteCount();
+    }
+  }, [isAuthenticated, user]);
+
+  // Listen for vote-cast events to update count
+  useEffect(() => {
+    const handleVoteCast = () => {
+      const previousCount = voteCount;
+      const newCount = previousCount + 1;
+      console.log(`ArticleList: Vote cast! Count: ${previousCount} → ${newCount}`);
+      setVoteCount(newCount);
+      
+      // Show celebration modal when reaching exactly 10 votes
+      if (newCount === 10) {
+        console.log('ArticleList: 🎉 Reached 10 votes! Showing celebration modal...');
+        setTimeout(() => {
+          setShowCelebration(true);
+        }, 500); // Small delay so rooster animation completes
+      }
+    };
+
+    window.addEventListener('vote-cast', handleVoteCast);
+    return () => window.removeEventListener('vote-cast', handleVoteCast);
+  }, [voteCount]);
+
+  // Listen for first interaction being applied after signup
+  useEffect(() => {
+    const handleFirstInteractionApplied = (event: CustomEvent) => {
+      console.log('First interaction applied - refreshing feed to show vote/save');
+      
+      // Refresh feed immediately to show the applied interaction
+      setArticles([]);
+      setPage(1);
+      setHasMore(true);
+      fetchArticles(true);
+      
+      // Also refetch vote count to update Discovery Mode badge
+      if (user) {
+        fetch(`${API_BASE_URL}/api/user/stats?userId=${user.id}`)
+          .then(res => res.json())
+          .then(data => setVoteCount(data.voteCount || 0))
+          .catch(err => console.error('Error fetching vote count:', err));
+      }
+    };
+
+    window.addEventListener('first-interaction-applied', handleFirstInteractionApplied as EventListener);
+    return () => window.removeEventListener('first-interaction-applied', handleFirstInteractionApplied as EventListener);
+  }, [user]);
 
   // Refresh feed when authentication state changes (login/logout)
   useEffect(() => {
@@ -48,8 +119,11 @@ export default function ArticleList() {
   // Listen for personalize button click from header
   useEffect(() => {
     const handleOpenAuth = () => {
+      console.log('ArticleList: Received open-auth-modal event, isAuthenticated:', isAuthenticated);
       if (!isAuthenticated) {
         setShowAuthModal(true);
+      } else {
+        console.log('ArticleList: User already authenticated, ignoring auth modal request');
       }
     };
     
@@ -75,6 +149,53 @@ export default function ArticleList() {
     return () => window.removeEventListener('scroll', handleScroll);
   }, [loadingMore, hasMore, page]);
 
+  // Sync subnav scroll behavior with header
+  useEffect(() => {
+    let lastScrollTop = 0;
+    let scrollTimeout: number | null = null;
+    const scrollThreshold = 50;
+
+    const handleScroll = () => {
+      if (scrollTimeout) {
+        clearTimeout(scrollTimeout);
+      }
+
+      scrollTimeout = window.setTimeout(() => {
+        const header = document.getElementById('site-header');
+        const categoryFilter = document.getElementById('category-filter');
+        
+        if (!header || !categoryFilter) return;
+
+        const headerHeight = header.offsetHeight;
+        const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+
+        if (scrollTop > scrollThreshold) {
+          if (scrollTop > lastScrollTop) {
+            // Scrolling down - hide both
+            header.style.transform = 'translateY(-100%)';
+            categoryFilter.style.transform = `translateY(-${headerHeight}px)`;
+          } else {
+            // Scrolling up - show both
+            header.style.transform = 'translateY(0)';
+            categoryFilter.style.transform = 'translateY(0)';
+          }
+        } else {
+          // At top - always show both
+          header.style.transform = 'translateY(0)';
+          categoryFilter.style.transform = 'translateY(0)';
+        }
+
+        lastScrollTop = scrollTop <= 0 ? 0 : scrollTop;
+      }, 10);
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      if (scrollTimeout) clearTimeout(scrollTimeout);
+    };
+  }, []);
+
   // Refresh feed when tab becomes visible (cross-device sync)
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -98,6 +219,9 @@ export default function ArticleList() {
   // Track article impressions - batch send every 3 seconds
   useEffect(() => {
     if (pendingImpressions.size === 0) return;
+    
+    // Don't track impressions for logged-out users
+    if (!isAuthenticated || !user?.id) return;
 
     const timer = setTimeout(async () => {
       const articleIds = Array.from(pendingImpressions);
@@ -109,7 +233,7 @@ export default function ArticleList() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             articleIds,
-            userId: user?.id || 0
+            userId: user.id
           })
         });
       } catch (err) {
@@ -118,7 +242,7 @@ export default function ArticleList() {
     }, 3000);
 
     return () => clearTimeout(timer);
-  }, [pendingImpressions, user?.id]);
+  }, [pendingImpressions, user?.id, isAuthenticated]);
 
   // Intersection Observer to detect article visibility
   useEffect(() => {
@@ -201,7 +325,19 @@ export default function ArticleList() {
         throw new Error('Failed to fetch articles');
       }
 
+      // Log algorithm info from response headers
+      const algorithm = response.headers.get('x-algorithm');
+      const apiUserId = response.headers.get('x-user-id');
+      const voteCount = response.headers.get('x-vote-count');
+      console.log(`🔍 Feed API Response - Algorithm: ${algorithm}, UserId: ${apiUserId}, VoteCount: ${voteCount}`);
+
       const data: FeedResponse = await response.json();
+      
+      // Log first few article scores
+      if (data.articles.length > 0) {
+        const scores = data.articles.slice(0, 5).map(a => a.score?.toFixed(1));
+        console.log(`📊 Article scores:`, scores);
+      }
       
       if (reset) {
         setArticles(data.articles);
@@ -332,6 +468,13 @@ export default function ArticleList() {
     fetchArticles(true).finally(() => setRefreshing(false));
   };
 
+  const handleCelebrationClose = () => {
+    console.log('ArticleList: Closing celebration modal and refreshing feed');
+    setShowCelebration(false);
+    // Refresh feed to show new Personalized algorithm
+    handleRefresh();
+  };
+
   if (loading && articles.length === 0) {
     return (
       <div className="max-w-5xl mx-auto px-4 py-8">
@@ -375,9 +518,14 @@ export default function ArticleList() {
           fetchArticles(true);
         }}
       />
+
+      <CelebrationModal
+        isOpen={showCelebration}
+        onClose={handleCelebrationClose}
+      />
       
       <div className="max-w-5xl mx-auto">
-        <div id="category-filter" className="sticky top-16 bg-white z-40 px-4 transition-transform duration-300 ease-in-out">
+        <div id="category-filter" className="sticky-top-nav bg-white z-40 px-4 transition-transform duration-300 ease-in-out">
           <CategoryFilter onCategoryChange={handleCategoryChange} activeCategory={category} />
         </div>
 

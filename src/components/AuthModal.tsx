@@ -66,14 +66,62 @@ export default function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps
             setPolling(false);
             
             // Store token and show success state
-            localStorage.setItem('auth_token', data.token);
+            console.log('AuthModal: Attempting to store token:', data.token.substring(0, 20) + '...');
+            try {
+              localStorage.setItem('auth_token', data.token);
+              const verification = localStorage.getItem('auth_token');
+              console.log('AuthModal: Token stored and verified:', verification ? 'SUCCESS' : 'FAILED');
+            } catch (e) {
+              console.error('AuthModal: Failed to store token in localStorage:', e);
+            }
             setLoginSuccess(true);
             
-            // Auto-close after 3 seconds and trigger success
+            // Check for first interaction and seed algorithm
+            const firstInteraction = localStorage.getItem('first_interaction');
+            if (firstInteraction) {
+              try {
+                const interaction = JSON.parse(firstInteraction);
+                
+                // Seed the algorithm with first interaction
+                const seedResponse = await fetch(`${API_BASE_URL}/api/seed-algorithm`, {
+                  method: 'POST',
+                  headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${data.token}`
+                  },
+                  body: JSON.stringify({
+                    userId: data.user.id,
+                    interactionType: interaction.type,
+                    articleId: interaction.articleId,
+                    categoryId: interaction.categoryId,
+                    sourceId: interaction.sourceId
+                  })
+                });
+                
+                if (seedResponse.ok) {
+                  console.log('First interaction seeded successfully');
+                  
+                  // Dispatch event so ArticleList knows to refresh and show the interaction
+                  window.dispatchEvent(new CustomEvent('first-interaction-applied', {
+                    detail: {
+                      articleId: interaction.articleId,
+                      type: interaction.type
+                    }
+                  }));
+                }
+                
+                // Clear first interaction after seeding
+                localStorage.removeItem('first_interaction');
+              } catch (err) {
+                console.error('Error seeding algorithm:', err);
+              }
+            }
+            
+            // Auto-close after 2 seconds and trigger success
             setTimeout(() => {
               onSuccess();
               onClose();
-            }, 3000);
+            }, 2000);
           } else if (data.expired) {
             // Session expired
             clearInterval(pollInterval);

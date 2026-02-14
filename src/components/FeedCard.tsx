@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Article } from '../lib/types';
+import { API_BASE_URL } from '../lib/config';
 
 // Decode HTML entities in text
 function decodeHtmlEntities(text: string): string {
@@ -50,16 +51,120 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
   const [stopBouncing, setStopBouncing] = useState(false);
   const [isSaved, setIsSaved] = useState(isSavedView); // If in saved view, article is already saved
   const [isSaving, setIsSaving] = useState(false);
+  const [currentScore, setCurrentScore] = useState<number | undefined>(article.adjustedScore);
+  const [scoreUpdating, setScoreUpdating] = useState(false);
+  const [showScoreTooltip, setShowScoreTooltip] = useState(false);
   const cardRef = useRef<HTMLElement>(null);
+
+  // Calculate percentile for a score in a normal distribution (mean=50, stdDev=20)
+  const calculatePercentile = (score: number): number => {
+    const mean = 50;
+    const stdDev = 20;
+    const zScore = (score - mean) / stdDev;
+    
+    // Approximation of cumulative distribution function (CDF) for normal distribution
+    // Using error function approximation
+    const t = 1 / (1 + 0.2316419 * Math.abs(zScore));
+    const d = 0.3989423 * Math.exp(-zScore * zScore / 2);
+    const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+    const cdf = zScore > 0 ? 1 - p : p;
+    
+    return Math.round(cdf * 100);
+  };
+  
+  // Debug log on mount
+  useEffect(() => {
+    console.log(`FeedCard mounted - Article ${article.id}, isAuthenticated: ${isAuthenticated}, userId: ${userId}`);
+  }, []);
+
+  // Recalculate score after interaction
+  const recalculateScore = async () => {
+    // Double-check auth state to prevent Safari privacy mode issues
+    const hasToken = !!localStorage.getItem('auth_token');
+    const isActuallyAuthenticated = isAuthenticated || hasToken;
+    if (!isActuallyAuthenticated || !userId) return;
+    
+    setScoreUpdating(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/recalculate-score`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, articleId: article.id })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setCurrentScore(data.adjustedScore);
+        
+        // Remove highlight after 2 seconds
+        setTimeout(() => setScoreUpdating(false), 2000);
+      }
+    } catch (error) {
+      console.error('Error recalculating score:', error);
+      setScoreUpdating(false);
+    }
+  };
+
+  const handleArticleClick = (e: React.MouseEvent) => {
+    if (isDragging) {
+      e.preventDefault();
+      return;
+    }
+    
+    // Double-check auth state: Check both React state AND localStorage token
+    // This prevents Safari privacy mode from incorrectly blocking navigation
+    const hasToken = !!localStorage.getItem('auth_token');
+    const isActuallyAuthenticated = isAuthenticated || hasToken;
+    
+    // Only block navigation if BOTH checks confirm user is not authenticated
+    if (!isActuallyAuthenticated) {
+      localStorage.setItem('first_interaction', JSON.stringify({
+        type: 'click',
+        articleId: article.id,
+        articleTitle: article.title,
+        categoryId: article.category_id,
+        sourceId: article.source_id,
+        timestamp: Date.now()
+      }));
+      
+      // Dispatch event to open auth modal
+      window.dispatchEvent(new CustomEvent('open-auth-modal', { 
+        detail: { firstInteraction: true }
+      }));
+      
+      e.preventDefault();
+      return;
+    }
+    
+    // If authenticated, article link works normally (no special handling needed)
+  };
 
   const handleVote = async (vote: number) => {
     if (isVoting) return;
     
-    // If not authenticated, show auth modal
-    if (!isAuthenticated) {
-      window.dispatchEvent(new CustomEvent('open-auth-modal'));
+    // Double-check auth state to prevent Safari privacy mode issues
+    const hasToken = !!localStorage.getItem('auth_token');
+    const isActuallyAuthenticated = isAuthenticated || hasToken;
+    
+    // If not authenticated, store first interaction and show auth modal
+    if (!isActuallyAuthenticated) {
+      console.log('FeedCard: User not authenticated, storing first interaction and showing auth modal');
+      localStorage.setItem('first_interaction', JSON.stringify({
+        type: vote === 1 ? 'upvote' : 'downvote',
+        articleId: article.id,
+        articleTitle: article.title,
+        categoryId: article.category_id,
+        sourceId: article.source_id,
+        timestamp: Date.now()
+      }));
+      
+      window.dispatchEvent(new CustomEvent('open-auth-modal', { 
+        detail: { firstInteraction: true }
+      }));
       return;
     }
+    
+    console.log('FeedCard: User authenticated, processing vote normally');
     
     // If swiping opposite direction of current vote, unvote (set to 0)
     if (userVote !== 0 && userVote !== vote) {
@@ -80,13 +185,23 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
       await onVote(article.id, vote);
       setUserVote(vote);
       
+      // Notify DiscoveryModeBadge about vote (only for new votes, not unvotes)
+      if (vote !== 0 && userVote === 0) {
+        window.dispatchEvent(new CustomEvent('vote-cast'));
+      }
+      
+      // Recalculate score after vote
+      if (vote !== 0) {
+        recalculateScore();
+      }
+      
       if (vote !== 0) {
         // Stop bouncing after 1.5 seconds (about 3 bounces)
         setTimeout(() => setStopBouncing(true), 1500);
         
-        // For downvote, hide rooster after 2 seconds (ArticleList will remove it)
+        // For downvote, hide rooster after 1 second (ArticleList will remove it)
         if (vote === -1) {
-          setTimeout(() => setShowVoteFeedback(false), 2000);
+          setTimeout(() => setShowVoteFeedback(false), 1000);
         }
         // For upvote, keep rooster visible forever (don't hide it)
       }
@@ -101,12 +216,29 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
   const handleSaveToggle = async () => {
     if (isSaving) return;
     
-    // If not authenticated, show auth modal
-    if (!isAuthenticated) {
-      // Trigger auth modal via event
-      window.dispatchEvent(new CustomEvent('open-auth-modal'));
+    // Double-check auth state to prevent Safari privacy mode issues
+    const hasToken = !!localStorage.getItem('auth_token');
+    const isActuallyAuthenticated = isAuthenticated || hasToken;
+    
+    // If not authenticated, store first interaction and show auth modal
+    if (!isActuallyAuthenticated) {
+      console.log('FeedCard: User not authenticated, storing first interaction and showing auth modal');
+      localStorage.setItem('first_interaction', JSON.stringify({
+        type: 'save',
+        articleId: article.id,
+        articleTitle: article.title,
+        categoryId: article.category_id,
+        sourceId: article.source_id,
+        timestamp: Date.now()
+      }));
+      
+      window.dispatchEvent(new CustomEvent('open-auth-modal', { 
+        detail: { firstInteraction: true }
+      }));
       return;
     }
+    
+    console.log('FeedCard: User authenticated, processing save/unsave normally');
     
     setIsSaving(true);
     
@@ -136,6 +268,9 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
         
         if (!response.ok) throw new Error('Failed to save');
         setIsSaved(true);
+        
+        // Recalculate score after save (saves count as likes)
+        recalculateScore();
       }
     } catch (error) {
       console.error('Error toggling save:', error);
@@ -166,8 +301,25 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
     };
   }, []);
 
+  // Reset stuck swipe state when returning to tab (fixes right-click issue)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        // Reset any stuck swipe state when tab becomes visible
+        setSwipeOffset(0);
+        setIsDragging(false);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
   // Mouse drag handling
   const handleMouseDown = (e: React.MouseEvent) => {
+    // Ignore right-click (context menu)
+    if (e.button !== 0) return;
+    
     setIsDragging(true);
     const startX = e.clientX;
 
@@ -192,12 +344,25 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
       }
       
       setSwipeOffset(0);
+      cleanup();
+    };
+
+    const handleContextMenu = () => {
+      // Reset state if context menu is opened
+      setIsDragging(false);
+      setSwipeOffset(0);
+      cleanup();
+    };
+
+    const cleanup = () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('contextmenu', handleContextMenu);
     };
 
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener('contextmenu', handleContextMenu);
   };
 
   // Attach touch listener with { passive: false } for Safari compatibility
@@ -307,35 +472,31 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
     transition: isDragging ? 'none' : 'transform 0.3s ease, opacity 0.2s ease'
   };
 
-  const getSwipeIndicator = () => {
-    if (Math.abs(swipeOffset) < 30) return null;
+  // Background layer with swipe indicators (stays fixed while card moves)
+  const getSwipeBackground = () => {
+    if (Math.abs(swipeOffset) < 80) return null;
     
-    const iconOpacity = Math.min(Math.abs(swipeOffset) / 100, 1);
+    const iconOpacity = Math.min(Math.abs(swipeOffset) / 150, 1);
     
     if (swipeOffset > 0) {
-      // Swiping right - show happy rooster in the LEFT margin within the card bounds
+      // Swiping right - show happy rooster on the left side of background
       return (
-        <div 
-          className="absolute left-6 top-1/2 -translate-y-1/2 z-0 pointer-events-none"
-          style={{ opacity: iconOpacity }}
-        >
+        <div className="absolute inset-0 pointer-events-none flex items-center justify-start px-6">
           <img 
             src="/happy-rooster.png" 
             alt="Upvote" 
-            className="h-12 w-12 object-contain"
+            className="h-16 w-16 object-contain grayscale"
+            style={{ opacity: iconOpacity }}
           />
         </div>
       );
     } else {
       // Swiping left
       if (isSavedView) {
-        // In saved view, show trash/remove icon
+        // In saved view, show trash icon on right side
         return (
-          <div 
-            className="absolute right-6 top-1/2 -translate-y-1/2 z-0 pointer-events-none"
-            style={{ opacity: iconOpacity }}
-          >
-            <div className="bg-red-500 rounded-full p-3">
+          <div className="absolute inset-0 pointer-events-none flex items-center justify-end px-6">
+            <div className="bg-red-500 rounded-full p-3" style={{ opacity: iconOpacity }}>
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="3 6 5 6 21 6"></polyline>
                 <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -346,16 +507,14 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
           </div>
         );
       } else {
-        // Normal view, show sad rooster
+        // Normal view, show sad rooster on right side
         return (
-          <div 
-            className="absolute right-6 top-1/2 -translate-y-1/2 z-0 pointer-events-none"
-            style={{ opacity: iconOpacity }}
-          >
+          <div className="absolute inset-0 pointer-events-none flex items-center justify-end px-6">
             <img 
               src="/sad-rooster.png" 
               alt="Downvote" 
-              className="h-12 w-12 object-contain"
+              className="h-16 w-16 object-contain grayscale"
+              style={{ opacity: iconOpacity }}
             />
           </div>
         );
@@ -364,24 +523,42 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
   };
 
   return (
-    <>
+    <div className="relative overflow-hidden">
+      {/* Background layer with swipe indicators - stays fixed */}
+      {getSwipeBackground()}
+      
+      {/* Card layer - moves with swipe */}
       <article 
         ref={cardRef}
-        className="article-card relative select-none cursor-grab active:cursor-grabbing"
+        className="article-card relative select-none cursor-grab active:cursor-grabbing bg-white"
         style={cardStyle}
         onMouseDown={handleMouseDown}
         data-article-id={article.id}
       >
-        {getSwipeIndicator()}
-      
+      {/* X button for saved view */}
+      {isSavedView && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            handleSaveToggle();
+          }}
+          className="absolute top-3 right-3 z-20 w-6 h-6 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 hover:text-gray-800 transition-colors"
+          title="Remove from saved"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      )}
       <div className="flex gap-4 relative">
         <div className="flex-1 min-w-0 relative z-10">
           <h3 className="article-title">
             <a 
-              href={article.url} 
+              href={article.spotify_url || article.url} 
               target="_blank" 
               rel="noopener noreferrer"
-              onClick={(e) => isDragging && e.preventDefault()}
+              onClick={handleArticleClick}
             >
               {decodeHtmlEntities(article.title)}
             </a>
@@ -406,10 +583,27 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
           <div className="flex items-center justify-between mt-3">
             <div className="article-meta">
               {article.published_at && formatDate(article.published_at)}
-              {article.score !== undefined && (
-                <span className="ml-3 text-blue-600">
-                  Score: {article.score.toFixed(1)}
-                </span>
+              {currentScore !== undefined && (
+                <div className="relative inline-block ml-3">
+                  <span 
+                    className={`text-blue-600 cursor-help transition-all duration-500 ${
+                      scoreUpdating ? 'bg-blue-100 px-2 py-0.5 rounded' : ''
+                    }`}
+                    onMouseEnter={() => setShowScoreTooltip(true)}
+                    onMouseLeave={() => setShowScoreTooltip(false)}
+                  >
+                    Score: {currentScore.toFixed(1)}
+                  </span>
+                  
+                  {/* Score tooltip */}
+                  {showScoreTooltip && (
+                    <div className="absolute z-50 left-full ml-2 top-1/2 -translate-y-1/2 w-56 p-2 bg-gray-900 text-white text-xs rounded-lg shadow-xl">
+                      <div>Score <span className="text-blue-300 font-semibold">{currentScore.toFixed(0)}</span> is in the top <span className="text-green-300 font-semibold">{100 - calculatePercentile(currentScore)}%</span> of all articles</div>
+                      {/* Arrow pointing left */}
+                      <div className="absolute right-full top-1/2 -translate-y-1/2 w-0 h-0 border-t-4 border-t-transparent border-b-4 border-b-transparent border-r-4 border-r-gray-900"></div>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
             
@@ -455,7 +649,7 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
               </div>
             )}
             
-            {(showVoteFeedback && feedbackType === 'upvote') || userVote === 1 ? (
+            {!isSavedView && ((showVoteFeedback && feedbackType === 'upvote') || userVote === 1) ? (
               <div className="flex items-center justify-center" style={{ width: '120px' }}>
                 <img 
                   src="/happy-rooster.png" 
@@ -474,6 +668,6 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
         </div>
       </div>
     </article>
-    </>
+    </div>
   );
 }

@@ -4,6 +4,7 @@ import { API_BASE_URL } from './config';
 interface User {
   id: number;
   email: string;
+  displayName?: string;
 }
 
 interface AuthContextType {
@@ -21,11 +22,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Test localStorage availability
+    try {
+      localStorage.setItem('test', '1');
+      const test = localStorage.getItem('test');
+      localStorage.removeItem('test');
+      console.log('Auth: localStorage is available:', test === '1' ? 'YES' : 'NO');
+    } catch (e) {
+      console.error('Auth: localStorage test failed:', e);
+    }
+    
     // Check if user is already logged in (token in localStorage)
     const token = localStorage.getItem('auth_token');
+    console.log('Auth: Checking for existing token:', token ? 'Found' : 'Not found');
     if (token) {
       validateSession(token);
     } else {
+      console.log('Auth: No token found, user logged out');
       setUser(null); // Ensure user is cleared if no token
       setLoading(false);
     }
@@ -75,6 +88,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   const validateSession = async (token: string) => {
+    console.log('Auth: Validating session...');
     try {
       const response = await fetch(`${API_BASE_URL}/api/auth/validate-session`, {
         method: 'POST',
@@ -85,20 +99,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (response.ok) {
         const data = await response.json();
         if (data.valid) {
+          console.log('Auth: Session valid, user:', data.user);
           setUser(data.user);
           // Session is still valid and has been refreshed on the backend
         } else {
+          console.log('Auth: Session invalid');
           setUser(null);
           localStorage.removeItem('auth_token');
         }
       } else {
+        console.log('Auth: Session validation failed with status:', response.status);
         setUser(null);
         localStorage.removeItem('auth_token');
       }
     } catch (error) {
       console.error('Error validating session:', error);
-      setUser(null);
-      localStorage.removeItem('auth_token');
+      // Don't immediately log out on network errors - keep trying
+      console.log('Auth: Network error during validation, will retry on next interaction');
+      setLoading(false);
+      // Keep user logged in optimistically
+      return;
     } finally {
       setLoading(false);
     }
@@ -114,8 +134,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (response.ok) {
         const data = await response.json();
+        console.log('Auth: Magic link verified, storing token');
         setUser(data.user);
-        localStorage.setItem('auth_token', data.token);
+        try {
+          localStorage.setItem('auth_token', data.token);
+          const verification = localStorage.getItem('auth_token');
+          console.log('Auth: Token stored via magic link:', verification ? 'SUCCESS' : 'FAILED');
+        } catch (e) {
+          console.error('Auth: Failed to store token:', e);
+        }
       } else {
         setUser(null);
         localStorage.removeItem('auth_token');
@@ -130,7 +157,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const login = async (token: string) => {
-    await verifyMagicLink(token);
+    // For direct session tokens (like test login), just validate
+    // For magic link tokens, verify them first
+    await validateSession(token);
   };
 
   const logout = () => {

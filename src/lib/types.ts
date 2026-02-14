@@ -52,7 +52,9 @@ export interface Article {
   source_name?: string;
   category_name?: string;
   category_slug?: string;
+  spotify_url?: string; // Spotify link for podcasts
   score?: number;
+  adjustedScore?: number; // Normalized score (bell curve, mean=100)
   userVote?: number; // -1, 0, 1
   contentScore?: number;
 }

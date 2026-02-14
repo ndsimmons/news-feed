@@ -14,7 +14,10 @@ import {
   updateWeights, 
   interestWeightsToScoringWeights,
   getTopArticles,
-  scoreAndSortArticlesDiverse
+  scoreAndSortArticlesOnboarding,
+  scoreAndSortArticlesOnboardingWithSeed,
+  scoreAndSortArticlesAdoption,
+  normalizeScoresToBellCurve
 } from './scoring';
 import {
   generateArticleEmbedding,
@@ -189,6 +192,31 @@ export default {
         return await handleSaveUserSources(request, env, corsHeaders);
       }
 
+      if (path === '/api/user/stats' && request.method === 'GET') {
+        return await handleGetUserStats(request, env, corsHeaders);
+      }
+
+      if (path === '/api/user/display-name' && request.method === 'POST') {
+        return await handleUpdateDisplayName(request, env, corsHeaders);
+      }
+
+      if (path === '/api/recalculate-score' && request.method === 'POST') {
+        return await handleRecalculateScore(request, env, corsHeaders);
+      }
+
+      if (path === '/api/seed-algorithm' && request.method === 'POST') {
+        return await handleSeedAlgorithm(request, env, corsHeaders);
+      }
+
+      if (path === '/api/backfill-weights' && request.method === 'POST') {
+        return await handleBackfillWeights(request, env, corsHeaders);
+      }
+
+      // TEST ENDPOINT - Auto login as test user 999 (ONLY for development/testing)
+      if (path === '/api/test-login' && request.method === 'POST') {
+        return await handleTestLogin(request, env, corsHeaders);
+      }
+
       // Profile management endpoints
       if (path === '/api/profiles' && request.method === 'GET') {
         return await handleGetProfiles(request, env, corsHeaders);
@@ -282,8 +310,18 @@ async function handleGetFeed(
     votedResult.results.map((v: any) => v.article_id)
   );
 
-  // Check if user is new (no voting history) - use diverse algorithm
-  const isNewUser = votedResult.results.length === 0;
+  // ========================================
+  // ALGORITHM SELECTION LOGIC (2-Tier System)
+  // ========================================
+  // LOGGED OUT: Cannot vote. Shows generic diverse feed.
+  // LOGGED IN + 0-24 votes: ONBOARDING ALGORITHM (balanced categories, minimal recency)
+  // LOGGED IN + 10+ votes: ADOPTION ALGORITHM (recency-focused, breaking news)
+  // ========================================
+  
+  const voteCount = votedResult.results.length;
+  const isLoggedOut = userId === 0;
+  const isOnboarding = !isLoggedOut && voteCount < 10; // First 10 votes = onboarding phase
+  const isAdoption = !isLoggedOut && voteCount >= 10; // 10+ votes = adoption phase
 
   // NEW: Get user's liked and disliked articles for content-based scoring
   // Include both upvoted articles AND saved articles (saves count as likes for algorithm)
@@ -305,7 +343,7 @@ async function handleGetFeed(
   // AND respect user source preferences
   // AND exclude downvoted articles
   let query = `
-    SELECT a.*, s.name as source_name, c.name as category_name, c.slug as category_slug
+    SELECT a.*, s.name as source_name, s.spotify_url as spotify_url, c.name as category_name, c.slug as category_slug
     FROM articles a
     LEFT JOIN sources s ON a.source_id = s.id
     LEFT JOIN categories c ON a.category_id = c.id
@@ -334,27 +372,50 @@ async function handleGetFeed(
     params.push(categorySlug);
   }
 
-  query += ' ORDER BY a.published_at DESC LIMIT 100';
-
-  const articlesResult = await env.DB.prepare(query).bind(...params).all();
+  // For logged-in users (onboarding + adoption), fetch balanced sample from each category
+  // For logged-out users, also fetch balanced to show variety
+  let articles: Article[] = [];
   
-  // NEW: Calculate content scores using embeddings
-  const articles = articlesResult.results as Article[];
+  if (!categorySlug) {
+    // BALANCED SAMPLING: Fetch 50 most recent from EACH category to ensure all topics represented
+    const categoriesResult = await env.DB.prepare('SELECT id FROM categories').all();
+    const categoryIds = categoriesResult.results.map((c: any) => c.id);
+    
+    for (const catId of categoryIds) {
+      const catQuery = query + ' AND c.id = ? ORDER BY a.published_at DESC LIMIT 50';
+      const catResult = await env.DB.prepare(catQuery).bind(...params, catId).all();
+      articles.push(...(catResult.results as Article[]));
+    }
+    
+    console.log(`Fetched ${articles.length} articles (balanced across ${categoryIds.length} categories)`);
+  } else {
+    // CATEGORY FILTERED: Fetch by recency for specific category
+    query += ' ORDER BY a.published_at DESC LIMIT 100';
+    const articlesResult = await env.DB.prepare(query).bind(...params).all();
+    articles = articlesResult.results as Article[];
+    console.log(`Processing ${articles.length} articles for category filter`);
+  }
   
-  console.log(`Processing ${articles.length} articles for feed`);
   console.log(`User has ${likedArticleIds.length} liked and ${dislikedArticleIds.length} disliked articles`);
   
-  // DIVERSE ALGORITHM FOR NEW USERS: Skip personalization, show diverse content
-  if (isNewUser) {
-    console.log('New user detected - using diverse algorithm');
+  // ========================================
+  // LOGGED OUT FEED (Generic Diverse Content)
+  // ========================================
+  // Users must log in to vote and progress through algorithms
+  // Show balanced, recent content to encourage signup
+  if (isLoggedOut) {
+    console.log(`LOGGED OUT FEED: Showing generic diverse content`);
     
-    // Use diverse scoring that balances categories and sources
-    const diverseArticles = scoreAndSortArticlesDiverse(articles, recencyDecayHours);
+    // Use onboarding scoring for logged-out users (balanced, no recency bias)
+    const diverseArticles = scoreAndSortArticlesOnboarding(articles);
+    
+    // Normalize scores to bell curve (mean=100, stdDev=20) before pagination
+    const normalizedArticles = normalizeScoresToBellCurve(diverseArticles);
     
     // Apply pagination
-    const topArticles = diverseArticles.slice(offset, offset + limit);
+    const topArticles = normalizedArticles.slice(offset, offset + limit);
     
-    // Add user vote status (always 0 for new users)
+    // Add user vote status (always 0 for logged out)
     const enrichedArticles = topArticles.map(article => ({
       ...article,
       userVote: 0
@@ -370,6 +431,128 @@ async function handleGetFeed(
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   }
+  
+  // ========================================
+  // ONBOARDING ALGORITHM (Logged in, 0-24 votes)
+  // ========================================
+  // Goal: Help users discover their interests across ALL categories
+  // Strategy: Perfect category balance, minimal recency bias
+  // Seeding: If user has a seed article, boost similar content (same category/source)
+  // Transition: After 10 votes → Adoption Algorithm
+  if (isOnboarding) {
+    console.log(`ONBOARDING ALGORITHM: User ${userId} has ${voteCount}/10 votes`);
+    
+    // Check if user has a seed article from first interaction
+    const seedResult = await env.DB.prepare(
+      'SELECT category_id, source_id FROM user_seed_articles WHERE user_id = ?'
+    ).bind(userId).first();
+    
+    let onboardingArticles;
+    
+    if (seedResult) {
+      console.log(`User ${userId} has seed article: category=${seedResult.category_id}, source=${seedResult.source_id}`);
+      
+      // Score with seed boost - articles from same category/source get higher scores
+      onboardingArticles = scoreAndSortArticlesOnboardingWithSeed(
+        articles, 
+        seedResult.category_id as number, 
+        seedResult.source_id as number
+      );
+    } else {
+      // Use standard onboarding scoring: balanced categories, minimal recency bias
+      onboardingArticles = scoreAndSortArticlesOnboarding(articles);
+    }
+    
+    // Normalize scores to bell curve (mean=100, stdDev=20) before pagination
+    const normalizedArticles = normalizeScoresToBellCurve(onboardingArticles);
+    
+    // Apply pagination
+    const topArticles = normalizedArticles.slice(offset, offset + limit);
+    
+    // Add user vote status
+    const enrichedArticles = topArticles.map(article => ({
+      ...article,
+      userVote: votedArticleIds.has(article.id) ? 
+        (votedResult.results.find((v: any) => v.article_id === article.id)?.vote || 0) : 0
+    }));
+    
+    const response: FeedResponse = {
+      articles: enrichedArticles,
+      total: onboardingArticles.length,
+      hasMore: offset + limit < onboardingArticles.length
+    };
+    
+    return new Response(JSON.stringify(response), {
+      headers: { 
+        ...corsHeaders, 
+        'Content-Type': 'application/json',
+        'X-Algorithm': 'onboarding',
+        'X-User-Id': userId.toString(),
+        'X-Vote-Count': voteCount.toString()
+      }
+    });
+  }
+  
+  // ========================================
+  // ADOPTION ALGORITHM (Logged in, 10+ votes)
+  // ========================================
+  // Goal: Show fresh breaking news with category diversity
+  // Strategy: Strong recency bias, breaking news boost, diversity bonuses
+  // This is the FINAL algorithm state - no further transitions
+  if (isAdoption) {
+    console.log(`ADOPTION ALGORITHM: User ${userId} with ${voteCount} votes (established user)`);
+    console.log('Interest weights:', JSON.stringify(weights));
+    
+    // Use adoption scoring: fresh content, balanced categories, WITH personalization
+    const adoptionArticles = scoreAndSortArticlesAdoption(articles, recencyDecayHours, weights);
+    
+    // Normalize scores to bell curve (mean=100, stdDev=20) before pagination
+    const normalizedArticles = normalizeScoresToBellCurve(adoptionArticles);
+    
+    // Apply pagination
+    const topArticles = normalizedArticles.slice(offset, offset + limit);
+    
+    // Add user vote status
+    const enrichedArticles = topArticles.map(article => ({
+      ...article,
+      userVote: votedArticleIds.has(article.id) ? 
+        (votedResult.results.find((v: any) => v.article_id === article.id)?.vote || 0) : 0
+    }));
+    
+    const response: FeedResponse = {
+      articles: enrichedArticles,
+      total: adoptionArticles.length,
+      hasMore: offset + limit < adoptionArticles.length
+    };
+    
+    return new Response(JSON.stringify(response), {
+      headers: { 
+        ...corsHeaders, 
+        'Content-Type': 'application/json',
+        'X-Algorithm': 'adoption',
+        'X-User-Id': userId.toString(),
+        'X-Vote-Count': voteCount.toString()
+      }
+    });
+  }
+  
+  // ========================================
+  // FALLBACK: Should never reach here
+  // ========================================
+  console.error(`ERROR: No algorithm matched for userId=${userId}, voteCount=${voteCount}`);
+  
+  // Return error response
+  return new Response(JSON.stringify({ 
+    error: 'Algorithm selection failed',
+    userId,
+    voteCount,
+    isLoggedOut,
+    isOnboarding,
+    isAdoption
+  }), {
+    status: 500,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+  });
   
   // Get embeddings for user's liked and disliked articles ONCE
   // Note: Vectorize getByIds() has a limit of 20 IDs per request
@@ -657,11 +840,23 @@ async function handleVote(
   const categoryWeight = newWeights.categories[article.category_id as number];
   const sourceWeight = newWeights.sources[article.source_id as number];
 
+  // Update category weight (separate row where source_id IS NULL)
+  console.log(`Updating category ${article.category_id} weight to ${categoryWeight} for user ${userId}`);
   await env.DB.prepare(`
-    UPDATE interest_weights 
-    SET weight = ?, updated_at = CURRENT_TIMESTAMP
-    WHERE user_id = ? AND category_id = ? AND source_id = ?
-  `).bind(categoryWeight, userId, article.category_id, article.source_id).run();
+    INSERT INTO interest_weights (user_id, category_id, source_id, weight, updated_at)
+    VALUES (?, ?, NULL, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id, category_id, source_id)
+    DO UPDATE SET weight = ?, updated_at = CURRENT_TIMESTAMP
+  `).bind(userId, article.category_id, categoryWeight, categoryWeight).run();
+
+  // Update source weight (separate row where category_id IS NULL)
+  console.log(`Updating source ${article.source_id} weight to ${sourceWeight} for user ${userId}`);
+  await env.DB.prepare(`
+    INSERT INTO interest_weights (user_id, category_id, source_id, weight, updated_at)
+    VALUES (?, NULL, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id, category_id, source_id)
+    DO UPDATE SET weight = ?, updated_at = CURRENT_TIMESTAMP
+  `).bind(userId, article.source_id, sourceWeight, sourceWeight).run();
 
   // NEW: Store preference for embedding-based recommendations
   await env.DB.prepare(`
@@ -1055,7 +1250,7 @@ async function handleValidateSession(
 
   // Check if session exists and is valid
   const session = await env.DB.prepare(`
-    SELECT s.*, u.email 
+    SELECT s.*, u.email, u.display_name 
     FROM user_sessions s
     JOIN users u ON s.user_id = u.id
     WHERE s.token = ? AND s.expires_at > datetime('now')
@@ -1083,7 +1278,8 @@ async function handleValidateSession(
     valid: true,
     user: {
       id: session.user_id,
-      email: session.email
+      email: session.email,
+      displayName: session.display_name || session.email?.split('@')[0] || 'User'
     }
   }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -1427,6 +1623,314 @@ async function handleGetUserSources(
   } catch (error) {
     console.error('Error fetching user sources:', error);
     return new Response(JSON.stringify({ error: 'Failed to fetch user sources' }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+/**
+ * GET /api/user/stats - Get user statistics (vote count, etc.)
+ */
+async function handleGetUserStats(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  const url = new URL(request.url);
+  const userId = parseInt(url.searchParams.get('userId') || '0');
+
+  if (!userId) {
+    return new Response(JSON.stringify({ error: 'User ID required' }), {
+      status: 400,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+
+  try {
+    // Get vote count
+    const voteCountResult = await env.DB.prepare(
+      'SELECT COUNT(*) as count FROM votes WHERE user_id = ?'
+    ).bind(userId).first();
+
+    const voteCount = (voteCountResult as any)?.count || 0;
+
+    return new Response(JSON.stringify({ 
+      voteCount,
+      isOnboarding: voteCount < 10
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  } catch (error) {
+    console.error('Error fetching user stats:', error);
+    return new Response(JSON.stringify({ error: 'Failed to fetch user stats' }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+/**
+ * POST /api/seed-algorithm - Seed algorithm based on first interaction
+ */
+async function handleSeedAlgorithm(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  const token = request.headers.get('Authorization')?.replace('Bearer ', '');
+  if (!token) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+
+  const session = await env.DB.prepare(`
+    SELECT user_id FROM user_sessions WHERE token = ? AND expires_at > datetime('now')
+  `).bind(token).first();
+
+  if (!session) {
+    return new Response(JSON.stringify({ error: 'Invalid token' }), {
+      status: 401,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+
+  try {
+    const { userId, interactionType, articleId, categoryId, sourceId } = await request.json();
+
+    console.log(`Seeding algorithm for user ${userId} based on ${interactionType} interaction with article ${articleId}`);
+
+    // Store the seed article for this user
+    await env.DB.prepare(`
+      INSERT OR REPLACE INTO user_seed_articles (user_id, article_id, interaction_type, category_id, source_id, created_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'))
+    `).bind(userId, articleId, interactionType, categoryId, sourceId).run();
+
+    // If interaction was upvote or downvote, actually cast the vote
+    if (interactionType === 'upvote' || interactionType === 'downvote') {
+      const voteValue = interactionType === 'upvote' ? 1 : -1;
+      
+      await env.DB.prepare(`
+        INSERT INTO votes (user_id, article_id, vote)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id, article_id) 
+        DO UPDATE SET vote = ?, voted_at = datetime('now')
+      `).bind(userId, articleId, voteValue, voteValue).run();
+      
+      console.log(`Cast ${interactionType} vote for user ${userId} on article ${articleId}`);
+    }
+
+    // If interaction was save, save the article
+    if (interactionType === 'save') {
+      await env.DB.prepare(`
+        INSERT OR IGNORE INTO saved_articles (user_id, article_id, saved_at)
+        VALUES (?, ?, datetime('now'))
+      `).bind(userId, articleId).run();
+      
+      console.log(`Saved article ${articleId} for user ${userId}`);
+    }
+
+    // If interaction was upvote, save, or click, boost that category and source
+    if (interactionType === 'upvote' || interactionType === 'save' || interactionType === 'click') {
+      // Boost category weight
+      await env.DB.prepare(`
+        INSERT INTO interest_weights (user_id, category_id, weight)
+        VALUES (?, ?, 1.3)
+        ON CONFLICT(user_id, category_id, source_id) 
+        DO UPDATE SET weight = 1.3
+      `).bind(userId, categoryId, null).run();
+
+      // Boost source weight
+      await env.DB.prepare(`
+        INSERT INTO interest_weights (user_id, source_id, weight)
+        VALUES (?, ?, 1.2)
+        ON CONFLICT(user_id, category_id, source_id) 
+        DO UPDATE SET weight = 1.2
+      `).bind(userId, null, sourceId).run();
+
+      console.log(`Boosted category ${categoryId} to 1.3 and source ${sourceId} to 1.2 for user ${userId}`);
+    }
+
+    return new Response(JSON.stringify({ 
+      success: true,
+      message: 'Algorithm seeded successfully'
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  } catch (error) {
+    console.error('Error seeding algorithm:', error);
+    return new Response(JSON.stringify({ error: 'Failed to seed algorithm' }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+/**
+ * POST /api/backfill-weights - Rebuild interest_weights from existing votes
+ * This processes all past votes to build personalization profile retroactively
+ */
+async function handleBackfillWeights(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  try {
+    const body = await request.json();
+    const userId = body.userId;
+
+    if (!userId) {
+      return new Response(JSON.stringify({ error: 'Missing userId' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    console.log(`Backfilling interest_weights for user ${userId}`);
+
+    // Get all votes for this user (ordered by date to replay them chronologically)
+    const votesResult = await env.DB.prepare(`
+      SELECT v.vote, v.article_id, a.category_id, a.source_id
+      FROM votes v
+      JOIN articles a ON v.article_id = a.id
+      WHERE v.user_id = ?
+      ORDER BY v.voted_at ASC
+    `).bind(userId).all();
+
+    const votes = votesResult.results;
+    console.log(`Found ${votes.length} votes to process`);
+
+    if (votes.length === 0) {
+      return new Response(JSON.stringify({ 
+        success: true,
+        message: 'No votes to process',
+        votesProcessed: 0
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Clear existing weights to start fresh
+    await env.DB.prepare('DELETE FROM interest_weights WHERE user_id = ?').bind(userId).run();
+    console.log(`Cleared existing weights for user ${userId}`);
+
+    // Initialize weights object
+    let weights: ScoringWeights = {
+      categories: {},
+      sources: {}
+    };
+
+    // Process each vote chronologically to build up weights
+    for (const vote of votes) {
+      const article = {
+        category_id: vote.category_id as number,
+        source_id: vote.source_id as number
+      };
+
+      // Apply the weight update
+      weights = updateWeights(vote.vote as number, article as Article, weights);
+    }
+
+    // Now save all the final weights to the database
+    const categoryEntries = Object.entries(weights.categories);
+    const sourceEntries = Object.entries(weights.sources);
+
+    console.log(`Saving ${categoryEntries.length} category weights and ${sourceEntries.length} source weights`);
+
+    // Insert category weights
+    for (const [categoryId, weight] of categoryEntries) {
+      await env.DB.prepare(`
+        INSERT INTO interest_weights (user_id, category_id, source_id, weight, updated_at)
+        VALUES (?, ?, NULL, ?, CURRENT_TIMESTAMP)
+      `).bind(userId, parseInt(categoryId), weight).run();
+    }
+
+    // Insert source weights
+    for (const [sourceId, weight] of sourceEntries) {
+      await env.DB.prepare(`
+        INSERT INTO interest_weights (user_id, category_id, source_id, weight, updated_at)
+        VALUES (?, NULL, ?, ?, CURRENT_TIMESTAMP)
+      `).bind(userId, parseInt(sourceId), weight).run();
+    }
+
+    console.log(`Successfully backfilled interest_weights for user ${userId}`);
+
+    return new Response(JSON.stringify({ 
+      success: true,
+      message: 'Interest weights backfilled successfully',
+      votesProcessed: votes.length,
+      categoryWeights: categoryEntries.length,
+      sourceWeights: sourceEntries.length
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  } catch (error) {
+    console.error('Error backfilling weights:', error);
+    return new Response(JSON.stringify({ error: 'Failed to backfill weights' }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+/**
+ * POST /api/test-login - Auto-login as test user 999 (TESTING ONLY)
+ * Also resets all test user data
+ */
+async function handleTestLogin(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  try {
+    const TEST_USER_ID = 999;
+    
+    // First, reset the test user's data
+    await env.DB.prepare('DELETE FROM votes WHERE user_id = ?').bind(TEST_USER_ID).run();
+    await env.DB.prepare('DELETE FROM saved_articles WHERE user_id = ?').bind(TEST_USER_ID).run();
+    await env.DB.prepare('DELETE FROM user_seed_articles WHERE user_id = ?').bind(TEST_USER_ID).run();
+    await env.DB.prepare('DELETE FROM interest_weights WHERE user_id = ?').bind(TEST_USER_ID).run();
+    await env.DB.prepare('DELETE FROM user_sessions WHERE user_id = ?').bind(TEST_USER_ID).run();
+    
+    console.log('Test user 999 data reset');
+    
+    // Get test user info
+    const user = await env.DB.prepare(
+      'SELECT id, email FROM users WHERE id = ?'
+    ).bind(TEST_USER_ID).first();
+    
+    if (!user) {
+      return new Response(JSON.stringify({ error: 'Test user not found' }), {
+        status: 404,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+    
+    // Generate a session token
+    const token = crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
+    
+    await env.DB.prepare(`
+      INSERT INTO user_sessions (user_id, token, expires_at)
+      VALUES (?, ?, ?)
+    `).bind(TEST_USER_ID, token, expiresAt.toISOString()).run();
+    
+    console.log(`Test login token created for user ${TEST_USER_ID}`);
+    
+    return new Response(JSON.stringify({
+      token,
+      user: {
+        id: user.id,
+        email: user.email
+      }
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  } catch (error) {
+    console.error('Error in test login:', error);
+    return new Response(JSON.stringify({ error: 'Test login failed' }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
@@ -1982,6 +2486,176 @@ async function handleUnsaveArticle(
   } catch (error) {
     console.error('Error unsaving article:', error);
     return new Response(JSON.stringify({ error: 'Failed to unsave article' }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+/**
+ * Update user's display name
+ */
+async function handleUpdateDisplayName(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  try {
+    const { userId, displayName } = await request.json() as { userId: number; displayName: string };
+
+    if (!userId || !displayName) {
+      return new Response(JSON.stringify({ error: 'userId and displayName required' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Validate displayName (max 50 chars, alphanumeric + spaces/hyphens/underscores)
+    if (displayName.length > 50 || !/^[a-zA-Z0-9 _-]+$/.test(displayName)) {
+      return new Response(JSON.stringify({ error: 'Invalid display name. Use only letters, numbers, spaces, hyphens, and underscores (max 50 characters)' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    await env.DB.prepare(`
+      UPDATE users SET display_name = ? WHERE id = ?
+    `).bind(displayName.trim(), userId).run();
+
+    return new Response(JSON.stringify({ 
+      success: true,
+      displayName: displayName.trim()
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  } catch (error) {
+    console.error('Error updating display name:', error);
+    return new Response(JSON.stringify({ error: 'Failed to update display name' }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+/**
+ * Recalculate article score after user interaction
+ * Returns updated raw score and normalized adjusted score
+ */
+async function handleRecalculateScore(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  try {
+    const { userId, articleId } = await request.json() as { userId: number; articleId: number };
+
+    if (!userId || !articleId) {
+      return new Response(JSON.stringify({ error: 'userId and articleId required' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Get the article details
+    const article = await env.DB.prepare(`
+      SELECT a.*, s.name as source_name, c.name as category_name, c.slug as category_slug
+      FROM articles a
+      LEFT JOIN sources s ON a.source_id = s.id
+      LEFT JOIN categories c ON a.category_id = c.id
+      WHERE a.id = ?
+    `).bind(articleId).first() as any;
+
+    if (!article) {
+      return new Response(JSON.stringify({ error: 'Article not found' }), {
+        status: 404,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Get user's interest weights
+    const weightsResult = await env.DB.prepare(
+      'SELECT * FROM interest_weights WHERE user_id = ?'
+    ).bind(userId).all();
+    const weights = interestWeightsToScoringWeights(weightsResult.results as any[]);
+
+    // Get user's algorithm preferences
+    let prefsResult = await env.DB.prepare(
+      'SELECT recency_decay_hours FROM algorithm_profiles WHERE user_id = ? AND is_active = 1'
+    ).bind(userId).first();
+    
+    if (!prefsResult) {
+      prefsResult = await env.DB.prepare(
+        'SELECT recency_decay_hours FROM user_algorithm_settings WHERE user_id = ?'
+      ).bind(userId).first();
+    }
+    
+    const recencyDecayHours = (prefsResult?.recency_decay_hours as number) || 24;
+
+    // Check if user is in adoption phase (10+ votes)
+    const voteCountResult = await env.DB.prepare(
+      'SELECT COUNT(*) as count FROM votes WHERE user_id = ?'
+    ).bind(userId).first() as any;
+    const isAdoption = voteCountResult.count >= 10;
+
+    // Recalculate score using adoption algorithm
+    let newScore = 0;
+    if (isAdoption) {
+      const { calculateAdoptionScore } = await import('./scoring');
+      newScore = calculateAdoptionScore(
+        article,
+        recencyDecayHours,
+        new Set(),
+        new Set(),
+        weights
+      );
+    } else {
+      const { calculateOnboardingScore } = await import('./scoring');
+      newScore = calculateOnboardingScore(article, new Set(), new Set());
+    }
+
+    // To calculate adjusted score, we need the distribution of all current feed articles
+    // Get a sample of recent articles to calculate the distribution
+    const recentArticles = await env.DB.prepare(`
+      SELECT a.*, s.name as source_name, c.name as category_name, c.slug as category_slug
+      FROM articles a
+      LEFT JOIN sources s ON a.source_id = s.id
+      LEFT JOIN categories c ON a.category_id = c.id
+      WHERE a.published_at > datetime('now', '-7 days')
+      LIMIT 100
+    `).all();
+
+    // Score all articles to get distribution
+    const scoredArticles = recentArticles.results.map((a: any) => {
+      let score = 0;
+      if (isAdoption) {
+        const { calculateAdoptionScore } = require('./scoring');
+        score = calculateAdoptionScore(a, recencyDecayHours, new Set(), new Set(), weights);
+      } else {
+        const { calculateOnboardingScore } = require('./scoring');
+        score = calculateOnboardingScore(a, new Set(), new Set());
+      }
+      return { ...a, score };
+    });
+
+    // Normalize including the updated article
+    const articlesWithUpdated = [...scoredArticles, { ...article, score: newScore }];
+    const normalized = normalizeScoresToBellCurve(articlesWithUpdated);
+    
+    // Find the updated article in normalized results
+    const updatedArticle = normalized.find((a: any) => a.id === articleId);
+    const adjustedScore = updatedArticle?.adjustedScore || 50;
+
+    return new Response(JSON.stringify({ 
+      success: true,
+      articleId,
+      score: Math.round(newScore * 100) / 100,
+      adjustedScore
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  } catch (error) {
+    console.error('Error recalculating score:', error);
+    return new Response(JSON.stringify({ error: 'Failed to recalculate score' }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });

@@ -103,6 +103,13 @@
     @apply text-2xl font-bold text-black;
   }
 
+  /* Sticky top nav that moves with header */
+  .sticky-top-nav {
+    position: sticky;
+    top: 64px; /* Height of header */
+    transition: transform 0.3s ease-in-out;
+  }
+
   /* Loading states */
   .skeleton {
     @apply animate-pulse bg-gray-200 rounded;
