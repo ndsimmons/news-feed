@@ -454,14 +454,14 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
                 <img 
                   src="/happy-rooster.png" 
                   alt="Upvoted!" 
-                  className="h-20 object-contain" 
+                  className="h-12 object-contain" 
                 />
               </div>
             ) : null}
             
             {showVoteFeedback && feedbackType === 'downvote' && (
               <div className="flex items-center justify-center" style={{ width: '120px' }}>
-                <img src="/sad-rooster.png" alt="Downvoted" className="h-20 object-contain" />
+                <img src="/sad-rooster.png" alt="Downvoted" className="h-12 object-contain" />
               </div>
             )}
           </div>

@@ -53,9 +53,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     };
 
+    // Validate session when user returns to the tab (e.g., after leaving it open overnight)
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        // User returned to the tab - validate session if they're logged in
+        const currentToken = localStorage.getItem('auth_token');
+        if (currentToken && user) {
+          console.log('Tab became visible - validating session');
+          validateSession(currentToken);
+        }
+      }
+    };
+
     window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
-  }, []);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [user]);
 
   const validateSession = async (token: string) => {
     try {
