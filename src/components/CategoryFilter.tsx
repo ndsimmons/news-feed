@@ -5,12 +5,12 @@ import { useAuth } from '../lib/auth';
 
 interface CategoryFilterProps {
   onCategoryChange: (slug: string | null) => void;
+  activeCategory?: string | null;
 }
 
-export default function CategoryFilter({ onCategoryChange }: CategoryFilterProps) {
+export default function CategoryFilter({ onCategoryChange, activeCategory = null }: CategoryFilterProps) {
   const { isAuthenticated } = useAuth();
   const [categories, setCategories] = useState<Category[]>([]);
-  const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -30,7 +30,6 @@ export default function CategoryFilter({ onCategoryChange }: CategoryFilterProps
   };
 
   const handleCategoryClick = (slug: string | null) => {
-    setActiveCategory(slug);
     onCategoryChange(slug);
   };
 
