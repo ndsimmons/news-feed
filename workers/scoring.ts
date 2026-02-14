@@ -574,17 +574,22 @@ export function scoreAndSortArticlesAdoption(
   const seenSourceIds = new Set<number>();
   const seenCategoryIds = new Set<number>();
   
-  // Score all articles with adoption algorithm
-  const scoredArticles = articles.map(article => ({
-    ...article,
-    score: calculateAdoptionScore(
-      article,
-      recencyDecayHours,
-      seenSourceIds,
-      seenCategoryIds,
-      weights
-    )
-  }));
+   // Score all articles with adoption algorithm
+   // IMPORTANT: We must update seenCategoryIds/seenSourceIds as we go
+   // so that the diversity bonus only applies to the FIRST article from each category/source
+   const scoredArticles: Article[] = [];
+   for (const article of articles) {
+     const score = calculateAdoptionScore(
+       article,
+       recencyDecayHours,
+       seenSourceIds,
+       seenCategoryIds,
+       weights
+     );
+     scoredArticles.push({ ...article, score });
+     seenCategoryIds.add(article.category_id);
+     seenSourceIds.add(article.source_id);
+   }
 
   // Sort by score
   scoredArticles.sort((a, b) => (b.score || 0) - (a.score || 0));
