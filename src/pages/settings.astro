@@ -75,6 +75,73 @@ import Layout from '../layouts/Layout.astro';
             Customize how the recommendation algorithm ranks and displays articles.
           </p>
 
+          <!-- Algorithm Explanation -->
+          <div class="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-6 mb-6">
+            <h3 class="text-lg font-bold text-gray-900 mb-3">How Your Feed Is Ranked</h3>
+            <p class="text-sm text-gray-700 mb-4">
+              Articles are scored by multiplying learned preferences with freshness, then adding content similarity.
+            </p>
+            
+            <div class="space-y-3 text-sm">
+              <div class="flex items-start gap-3">
+                <span class="font-bold text-blue-600 min-w-[24px]">1.</span>
+                <div>
+                  <strong class="text-gray-900">Category Weight</strong>
+                  <span class="text-gray-600"> - Learned from your upvotes/downvotes (0.1x to 2.0x). Each vote adjusts by ±10%.</span>
+                </div>
+              </div>
+              
+              <div class="flex items-start gap-3">
+                <span class="font-bold text-blue-600 min-w-[24px]">2.</span>
+                <div>
+                  <strong class="text-gray-900">Source Weight</strong>
+                  <span class="text-gray-600"> - Also learned from votes (0.1x to 2.0x). Boosts or penalizes specific publishers.</span>
+                </div>
+              </div>
+              
+              <div class="flex items-start gap-3">
+                <span class="font-bold text-blue-600 min-w-[24px]">3.</span>
+                <div>
+                  <strong class="text-gray-900">Recency Multiplier</strong>
+                  <span class="text-gray-600"> - Newer articles score higher. Decay speed is customizable below (12-72 hours).</span>
+                </div>
+              </div>
+              
+              <div class="flex items-start gap-3">
+                <span class="font-bold text-blue-600 min-w-[24px]">4.</span>
+                <div>
+                  <strong class="text-gray-900">Content Similarity Bonus</strong>
+                  <span class="text-gray-600"> - AI embeddings add 0-100 points for articles similar to ones you liked.</span>
+                </div>
+              </div>
+              
+              <div class="flex items-start gap-3">
+                <span class="font-bold text-blue-600 min-w-[24px]">5.</span>
+                <div>
+                  <strong class="text-gray-900">Breaking News Boost</strong>
+                  <span class="text-gray-600"> - Articles <2 hours old get 1.4-1.8x multiplier (lower for high-volume sources).</span>
+                </div>
+              </div>
+              
+              <div class="flex items-start gap-3">
+                <span class="font-bold text-blue-600 min-w-[24px]">6.</span>
+                <div>
+                  <strong class="text-gray-900">Diversity Bonuses</strong>
+                  <span class="text-gray-600"> - Unseen categories get 1.5x, unseen sources get 1.3x to ensure variety.</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="mt-4 pt-4 border-t border-blue-200">
+              <p class="text-xs text-gray-600">
+                <strong>Final Score Formula:</strong> <code class="bg-white px-2 py-1 rounded text-blue-700">score = (category_weight × source_weight × recency × breaking_news × diversity) + content_similarity</code>
+              </p>
+              <p class="text-xs text-gray-600 mt-2">
+                Scores are then normalized to a bell curve (mean=50, std=20) so most articles fall between 10-90.
+              </p>
+            </div>
+          </div>
+
           <!-- Profile Selector -->
           <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
             <div class="flex items-center justify-between">
