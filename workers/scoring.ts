@@ -127,14 +127,24 @@ export function normalizeScoresToBellCurve(articles: Article[]): Article[] {
   const variance = scores.reduce((sum, s) => sum + Math.pow(s - mean, 2), 0) / scores.length;
   const stdDev = Math.sqrt(variance);
   
-  // Avoid division by zero
-  if (stdDev === 0) {
-    return articles.map(a => ({ ...a, adjustedScore: 50 }));
+  console.log(`📊 Normalization: ${articles.length} articles, mean=${mean.toFixed(2)}, stdDev=${stdDev.toFixed(2)}`);
+  console.log(`📊 Raw score range: ${Math.min(...scores).toFixed(2)} - ${Math.max(...scores).toFixed(2)}`);
+  
+  // Avoid division by zero or very small stdDev
+  // If all scores are nearly identical (stdDev < 0.1), spread them slightly
+  if (stdDev < 0.1) {
+    console.log(`⚠️ Very low stdDev (${stdDev}), applying fallback normalization`);
+    // Sort by raw score descending and assign scores from 60 down to 40
+    const sorted = [...articles].sort((a, b) => (b.score || 0) - (a.score || 0));
+    return sorted.map((article, index) => {
+      const adjustedScore = Math.round(60 - (index / Math.max(1, sorted.length - 1)) * 20);
+      return { ...article, adjustedScore };
+    });
   }
   
   // Transform each score: adjustedScore = 50 + 20 * (score - mean) / stdDev
   // This centers the distribution at 50 with a standard deviation of 20
-  return articles.map(article => {
+  const normalized = articles.map(article => {
     const rawScore = article.score || 0;
     const zScore = (rawScore - mean) / stdDev; // How many std devs from mean
     const adjustedScore = Math.round(50 + 20 * zScore); // Scale to mean=50, stdDev=20
@@ -144,6 +154,12 @@ export function normalizeScoresToBellCurve(articles: Article[]): Article[] {
       adjustedScore: Math.max(0, adjustedScore) // Ensure non-negative
     };
   });
+  
+  // Log adjusted score distribution
+  const adjustedScores = normalized.map(a => a.adjustedScore || 0);
+  console.log(`📊 Adjusted score range: ${Math.min(...adjustedScores)} - ${Math.max(...adjustedScores)}`);
+  
+  return normalized;
 }
 
 /**
