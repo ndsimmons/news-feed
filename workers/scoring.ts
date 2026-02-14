@@ -313,11 +313,15 @@ export function calculateAdoptionScore(
   const timeVariation = (publishMinutes / 60) * 0.08 - 0.04; // Range: -0.04 to +0.04
   score *= (1 + timeVariation);
 
-  // 6. Add article ID variation as tie-breaker
-  const idVariation = ((article.id % 1000) / 1000) * 0.04 - 0.02; // Range: -0.02 to +0.02
-  score *= (1 + idVariation);
+   // 6. Add article ID variation as tie-breaker
+   const idVariation = ((article.id % 1000) / 1000) * 0.04 - 0.02; // Range: -0.02 to +0.02
+   score *= (1 + idVariation);
 
-  return Math.round(score * 100) / 100;
+   // 7. Content similarity bonus from AI embeddings (0-100 points added)
+   const contentScore = (article as any).contentScore || 0;
+   score += contentScore;
+
+   return Math.round(score * 100) / 100;
 }
 
 /**

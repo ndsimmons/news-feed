@@ -396,11 +396,118 @@ async function handleGetFeed(
     console.log(`Processing ${articles.length} articles for category filter`);
   }
   
-  console.log(`User has ${likedArticleIds.length} liked and ${dislikedArticleIds.length} disliked articles`);
-  
-  // ========================================
-  // LOGGED OUT FEED (Generic Diverse Content)
-  // ========================================
+   console.log(`User has ${likedArticleIds.length} liked and ${dislikedArticleIds.length} disliked articles`);
+
+   // ========================================
+   // CONTENT SCORING: Fetch embeddings and compute content similarity scores
+   // This runs BEFORE algorithm selection so all paths can use content scores
+   // ========================================
+   const contentScoreMap = new Map<number, number>();
+   
+   if (!isLoggedOut && (likedArticleIds.length > 0 || dislikedArticleIds.length > 0)) {
+     try {
+       // Fetch user's liked/disliked embeddings
+       let likedEmbeddings: Array<{id: string, values: number[]}> = [];
+       let dislikedEmbeddings: Array<{id: string, values: number[]}> = [];
+       
+       if (likedArticleIds.length > 0) {
+         for (let i = 0; i < likedArticleIds.length; i += 20) {
+           const batch = likedArticleIds.slice(i, i + 20);
+           const batchResult = await env.VECTORIZE.getByIds(batch.map((id: number) => id.toString()));
+           if (batchResult) likedEmbeddings.push(...batchResult);
+         }
+         console.log(`Retrieved ${likedEmbeddings.length} liked article embeddings`);
+       }
+       
+       if (dislikedArticleIds.length > 0) {
+         for (let i = 0; i < dislikedArticleIds.length; i += 20) {
+           const batch = dislikedArticleIds.slice(i, i + 20);
+           const batchResult = await env.VECTORIZE.getByIds(batch.map((id: number) => id.toString()));
+           if (batchResult) dislikedEmbeddings.push(...batchResult);
+         }
+         console.log(`Retrieved ${dislikedEmbeddings.length} disliked article embeddings`);
+       }
+       
+       if (likedEmbeddings.length > 0 || dislikedEmbeddings.length > 0) {
+         // Batch fetch which articles have embeddings
+         const articleIds = articles.map(a => a.id);
+         const placeholders = articleIds.map(() => '?').join(',');
+         const embeddingStatusResult = await env.DB.prepare(`
+           SELECT article_id 
+           FROM article_embeddings 
+           WHERE article_id IN (${placeholders}) 
+             AND embedding_generated = 1
+         `).bind(...articleIds).all();
+         
+         const hasEmbeddingSet = new Set(
+           embeddingStatusResult.results.map((r: any) => r.article_id)
+         );
+         
+         console.log(`${hasEmbeddingSet.size} out of ${articleIds.length} articles have embeddings`);
+         
+         // Batch fetch article embeddings from Vectorize
+         const articlesWithEmbeddings = articleIds.filter(id => hasEmbeddingSet.has(id));
+         const allArticleEmbeddings = new Map<number, number[]>();
+         
+         if (articlesWithEmbeddings.length > 0) {
+           const batchSize = 20;
+           const batches = [];
+           for (let i = 0; i < articlesWithEmbeddings.length; i += batchSize) {
+             batches.push(articlesWithEmbeddings.slice(i, i + batchSize));
+           }
+           
+           const embeddingBatchResults = await Promise.all(
+             batches.map(batch => 
+               env.VECTORIZE.getByIds(batch.map(id => id.toString()))
+             )
+           );
+           
+           embeddingBatchResults.forEach(results => {
+             if (results) {
+               results.forEach((emb: any) => {
+                 allArticleEmbeddings.set(parseInt(emb.id), emb.values);
+               });
+             }
+           });
+           
+           console.log(`Successfully retrieved ${allArticleEmbeddings.size} article embeddings`);
+           
+           // Calculate content scores for each article
+           const likedEmbeddingValues = likedEmbeddings.map(e => e.values);
+           const dislikedEmbeddingValues = dislikedEmbeddings.map(e => e.values);
+           
+           for (const article of articles) {
+             const articleEmbedding = allArticleEmbeddings.get(article.id);
+             if (articleEmbedding) {
+               const score = calculateDirectContentScore(
+                 articleEmbedding,
+                 likedEmbeddingValues,
+                 dislikedEmbeddingValues,
+                 similarityStrength
+               );
+               if (score !== 0) {
+                 contentScoreMap.set(article.id, score);
+               }
+             }
+           }
+           
+           console.log(`Computed content scores for ${contentScoreMap.size} articles`);
+         }
+       }
+     } catch (error) {
+       console.error('Error computing content scores:', error);
+     }
+   }
+
+   // Attach content scores to articles for use by all algorithm paths
+   articles = articles.map(a => ({
+     ...a,
+     contentScore: contentScoreMap.get(a.id) || 0
+   }));
+   
+   // ========================================
+   // LOGGED OUT FEED (Generic Diverse Content)
+   // ========================================
   // Users must log in to vote and progress through algorithms
   // Show balanced, recent content to encourage signup
   if (isLoggedOut) {
@@ -554,255 +661,24 @@ async function handleGetFeed(
     });
   }
   
-  // ========================================
-  // FALLBACK: Should never reach here
-  // ========================================
-  console.error(`ERROR: No algorithm matched for userId=${userId}, voteCount=${voteCount}`);
-  
-  // Return error response
-  return new Response(JSON.stringify({ 
-    error: 'Algorithm selection failed',
-    userId,
-    voteCount,
-    isLoggedOut,
-    isOnboarding,
-    isAdoption
-  }), {
-    status: 500,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-  });
-  
-  // Get embeddings for user's liked and disliked articles ONCE
-  // Note: Vectorize getByIds() has a limit of 20 IDs per request
-  let likedEmbeddings: Array<{id: string, values: number[]}> = [];
-  let dislikedEmbeddings: Array<{id: string, values: number[]}> = [];
-  
-  // Batch fetch liked embeddings (20 IDs per batch)
-  if (likedArticleIds.length > 0) {
-    try {
-      for (let i = 0; i < likedArticleIds.length; i += 20) {
-        const batch = likedArticleIds.slice(i, i + 20);
-        const batchResult = await env.VECTORIZE.getByIds(batch.map(id => id.toString()));
-        if (batchResult) {
-          likedEmbeddings.push(...batchResult);
-        }
-      }
-      console.log(`Retrieved ${likedEmbeddings.length} liked article embeddings`);
-    } catch (error) {
-      console.error('Error fetching liked embeddings:', error);
-    }
-  }
-  
-  // Batch fetch disliked embeddings (20 IDs per batch)
-  if (dislikedArticleIds.length > 0) {
-    try {
-      for (let i = 0; i < dislikedArticleIds.length; i += 20) {
-        const batch = dislikedArticleIds.slice(i, i + 20);
-        const batchResult = await env.VECTORIZE.getByIds(batch.map(id => id.toString()));
-        if (batchResult) {
-          dislikedEmbeddings.push(...batchResult);
-        }
-      }
-      console.log(`Retrieved ${dislikedEmbeddings.length} disliked article embeddings`);
-    } catch (error) {
-      console.error('Error fetching disliked embeddings:', error);
-    }
-  }
-  
-  // OPTIMIZED: Batch fetch embeddings instead of N+1 queries
-  let articlesWithContentScore = articles.map(article => ({ ...article, contentScore: 0 }));
-  
-  // Skip if no user preference embeddings
-  if (likedEmbeddings.length > 0 || dislikedEmbeddings.length > 0) {
-    try {
-      // STEP 1: Batch fetch which articles have embeddings (1 query instead of 100)
-      const articleIds = articles.map(a => a.id);
-      const placeholders = articleIds.map(() => '?').join(',');
-      const embeddingStatusResult = await env.DB.prepare(`
-        SELECT article_id 
-        FROM article_embeddings 
-        WHERE article_id IN (${placeholders}) 
-          AND embedding_generated = 1
-      `).bind(...articleIds).all();
+   // ========================================
+   // FALLBACK: Should never reach here
+   // ========================================
+   console.error(`ERROR: No algorithm matched for userId=${userId}, voteCount=${voteCount}`);
+   
+   // Return error response
+   return new Response(JSON.stringify({ 
+     error: 'Algorithm selection failed',
+     userId,
+     voteCount,
+     isLoggedOut,
+     isOnboarding,
+     isAdoption
+   }), {
+     status: 500,
+     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+   });
 
-      const hasEmbeddingSet = new Set(
-        embeddingStatusResult.results.map((r: any) => r.article_id)
-      );
-      
-      console.log(`${hasEmbeddingSet.size} out of ${articleIds.length} articles have embeddings`);
-
-      // STEP 2: Batch fetch article embeddings from Vectorize (parallel batches of 20)
-      const articlesWithEmbeddings = articleIds.filter(id => hasEmbeddingSet.has(id));
-      const allArticleEmbeddings = new Map<number, number[]>();
-
-      if (articlesWithEmbeddings.length > 0) {
-        // Fetch in batches of 20 (Vectorize limit), but in PARALLEL
-        const batchSize = 20;
-        const batches = [];
-        for (let i = 0; i < articlesWithEmbeddings.length; i += batchSize) {
-          batches.push(articlesWithEmbeddings.slice(i, i + batchSize));
-        }
-
-        console.log(`Fetching ${articlesWithEmbeddings.length} embeddings in ${batches.length} parallel batches`);
-
-        const embeddingBatchResults = await Promise.all(
-          batches.map(batch => 
-            env.VECTORIZE.getByIds(batch.map(id => id.toString()))
-          )
-        );
-
-        // Flatten results into Map
-        embeddingBatchResults.forEach(results => {
-          if (results) {
-            results.forEach((emb: any) => {
-              allArticleEmbeddings.set(parseInt(emb.id), emb.values);
-            });
-          }
-        });
-
-        console.log(`Successfully retrieved ${allArticleEmbeddings.size} article embeddings`);
-
-        // STEP 3: Calculate scores (all in-memory now, super fast)
-        const likedEmbeddingValues = likedEmbeddings.map(e => e.values);
-        const dislikedEmbeddingValues = dislikedEmbeddings.map(e => e.values);
-        
-        articlesWithContentScore = articles.map(article => {
-          let contentScore = 0;
-          
-          const articleEmbedding = allArticleEmbeddings.get(article.id);
-          if (articleEmbedding) {
-            contentScore = calculateDirectContentScore(
-              articleEmbedding,
-              likedEmbeddingValues,
-              dislikedEmbeddingValues,
-              similarityStrength
-            );
-            
-            if (contentScore !== 0) {
-              console.log(`Article ${article.id} has content score: ${contentScore}`);
-            }
-          }
-          
-          return { ...article, contentScore };
-        });
-      }
-    } catch (error) {
-      console.error('Error in batch embedding fetch:', error);
-      // Fall back to no content scores if batch fetch fails
-      articlesWithContentScore = articles.map(article => ({ ...article, contentScore: 0 }));
-    }
-  }
-
-  // Score articles with content scores
-  let scoredArticles = articlesWithContentScore.map(article => ({
-    ...article,
-    score: calculateArticleScore(
-      article,
-      weights,
-      votedArticleIds.has(article.id),
-      article.contentScore || 0,
-      recencyDecayHours
-    )
-  }));
-
-  // Apply source diversity penalty based on user preference
-  if (sourceDiversityMultiplier < 1.0) {
-    // Get recently seen articles (last 30 impressions) to track source frequency
-    const recentImpressions = await env.DB.prepare(`
-      SELECT a.source_id, COUNT(*) as view_count
-      FROM article_impressions ai
-      JOIN articles a ON ai.article_id = a.id
-      WHERE ai.user_id = ?
-        AND ai.last_seen_at > datetime('now', '-24 hours')
-      GROUP BY a.source_id
-      ORDER BY ai.last_seen_at DESC
-      LIMIT 30
-    `).bind(userId).all();
-
-    const sourceFrequency = new Map<number, number>();
-    (recentImpressions.results as any[]).forEach(row => {
-      sourceFrequency.set(row.source_id, row.view_count);
-    });
-
-    // Apply diversity penalty based on how often source has been seen
-    scoredArticles = scoredArticles.map(article => {
-      const frequency = sourceFrequency.get(article.source_id) || 0;
-      let diversityPenalty = 1.0;
-
-      if (frequency > 0) {
-        // Calculate penalty: more frequent = larger penalty
-        // frequency 1-5: small penalty, 6-10: medium, 10+: large
-        const penaltyFactor = Math.min(frequency / 5, 1.0); // 0.0 to 1.0
-        
-        // Apply user's diversity preference
-        // sourceDiversityMultiplier: 0.0 (max diversity) to 1.0 (no penalty)
-        // If multiplier is 0.5 and penaltyFactor is 0.6, penalty = 1.0 - (0.5 * 0.6) = 0.7
-        diversityPenalty = 1.0 - ((1.0 - sourceDiversityMultiplier) * penaltyFactor);
-      }
-
-      return {
-        ...article,
-        score: article.score * diversityPenalty
-      };
-    });
-  }
-
-  // Apply score cap to prevent any single article from dominating
-  scoredArticles = scoredArticles.map(article => ({
-    ...article,
-    score: Math.min(article.score || 0, 200)
-  }));
-
-  // Sort after applying diversity penalty and score cap
-  scoredArticles.sort((a, b) => (b.score || 0) - (a.score || 0));
-
-  // Apply exploration factor: inject random/diverse articles
-  let topArticles = scoredArticles.slice(offset, offset + limit);
-  
-  if (explorationFactor > 0 && topArticles.length > 0) {
-    const explorationCount = Math.floor(topArticles.length * explorationFactor);
-    
-    if (explorationCount > 0) {
-      // Get lower-scored articles for exploration (from bottom 50% of scored articles)
-      const explorationPool = scoredArticles.slice(
-        Math.floor(scoredArticles.length * 0.5),
-        scoredArticles.length
-      );
-      
-      // Randomly select articles from exploration pool
-      const exploredArticles: typeof topArticles = [];
-      const poolCopy = [...explorationPool];
-      for (let i = 0; i < explorationCount && poolCopy.length > 0; i++) {
-        const randomIndex = Math.floor(Math.random() * poolCopy.length);
-        exploredArticles.push(poolCopy[randomIndex]);
-        poolCopy.splice(randomIndex, 1);
-      }
-      
-      // Replace last N articles with explored articles
-      topArticles = [
-        ...topArticles.slice(0, topArticles.length - explorationCount),
-        ...exploredArticles
-      ];
-      
-      console.log(`Exploration: Injected ${exploredArticles.length} diverse articles (${Math.round(explorationFactor * 100)}% of feed)`);
-    }
-  }
-
-  // Add user vote status to each article
-  const enrichedArticles = topArticles.map(article => ({
-    ...article,
-    userVote: votedArticleIds.has(article.id) ? 1 : 0
-  }));
-
-  const response: FeedResponse = {
-    articles: enrichedArticles,
-    total: scoredArticles.length,
-    hasMore: offset + limit < scoredArticles.length
-  };
-
-  return new Response(JSON.stringify(response), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-  });
 }
 
 /**
