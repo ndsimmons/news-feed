@@ -368,8 +368,8 @@ async function handleGetFeed(
       SELECT 1 FROM article_impressions ai
       WHERE ai.user_id = ?
         AND ai.article_id = a.id
-        AND ai.impression_count >= 2
-        AND ai.last_seen_at > datetime('now', '-7 days')
+        AND ai.impression_count >= 4
+        AND ai.last_seen_at > datetime('now', '-1 days')
     )
     AND NOT EXISTS (
       SELECT 1 FROM votes v
