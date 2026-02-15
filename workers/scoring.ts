@@ -121,41 +121,26 @@ function clamp(value: number, min: number, max: number): number {
 export function normalizeScoresToBellCurve(articles: Article[]): Article[] {
   if (articles.length === 0) return articles;
   
-  // Calculate mean and standard deviation of raw scores
   const scores = articles.map(a => a.score || 0);
-  const mean = scores.reduce((sum, s) => sum + s, 0) / scores.length;
-  const variance = scores.reduce((sum, s) => sum + Math.pow(s - mean, 2), 0) / scores.length;
-  const stdDev = Math.sqrt(variance);
+  const minScore = Math.min(...scores);
+  const maxScore = Math.max(...scores);
+  const range = maxScore - minScore;
   
-  console.log(`📊 Normalization: ${articles.length} articles, mean=${mean.toFixed(2)}, stdDev=${stdDev.toFixed(2)}`);
-  console.log(`📊 Raw score range: ${Math.min(...scores).toFixed(2)} - ${Math.max(...scores).toFixed(2)}`);
+  console.log(`📊 Normalization: ${articles.length} articles, raw range: ${minScore.toFixed(2)} - ${maxScore.toFixed(2)}`);
   
-  // Avoid division by zero or very small stdDev
-  // If all scores are nearly identical (stdDev < 0.1), spread them slightly
-  if (stdDev < 0.1) {
-    console.log(`⚠️ Very low stdDev (${stdDev}), applying fallback normalization`);
-    // Sort by raw score descending and assign scores from 60 down to 40
-    const sorted = [...articles].sort((a, b) => (b.score || 0) - (a.score || 0));
-    return sorted.map((article, index) => {
-      const adjustedScore = Math.round(60 - (index / Math.max(1, sorted.length - 1)) * 20);
-      return { ...article, adjustedScore };
-    });
-  }
-  
-  // Transform each score: adjustedScore = 50 + 20 * (score - mean) / stdDev
-  // This centers the distribution at 50 with a standard deviation of 20
+  // Simple min-max scaling to 0-100
   const normalized = articles.map(article => {
     const rawScore = article.score || 0;
-    const zScore = (rawScore - mean) / stdDev; // How many std devs from mean
-    const adjustedScore = Math.round(50 + 20 * zScore); // Scale to mean=50, stdDev=20
+    const adjustedScore = range > 0
+      ? Math.round((rawScore - minScore) / range * 100)
+      : 50;
     
     return {
       ...article,
-      adjustedScore: Math.max(0, adjustedScore) // Ensure non-negative
+      adjustedScore
     };
   });
   
-  // Log adjusted score distribution
   const adjustedScores = normalized.map(a => a.adjustedScore || 0);
   console.log(`📊 Adjusted score range: ${Math.min(...adjustedScores)} - ${Math.max(...adjustedScores)}`);
   
