@@ -1,6 +1,6 @@
 # Cloudflare Workers Configuration
 
-name = "news-feed-api"
+name = "news-feed"
 main = "workers/api.ts"
 compatibility_date = "2024-01-01"
 account_id = "f2ec251ad678c39bdc19ae4009db42db"
