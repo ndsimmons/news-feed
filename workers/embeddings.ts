@@ -77,7 +77,7 @@ export async function storeEmbedding(
   metadata?: Record<string, any>
 ): Promise<void> {
   try {
-    await vectorize.insert([
+    await vectorize.upsert([
       {
         id: articleId.toString(),
         values: embedding,

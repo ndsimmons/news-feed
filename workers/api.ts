@@ -28,7 +28,7 @@ import {
  * Calculate cosine similarity between two vectors
  */
 function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length) return 0;
+  if (!a || !b || a.length !== b.length) return 0;
   
   let dotProduct = 0;
   let normA = 0;
@@ -49,43 +49,58 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 /**
- * Calculate content score by comparing article directly to user's liked/disliked embeddings
+ * Calculate content score using top-K similarity difference.
+ * 
+ * Instead of computing (liked * boost) - (disliked * penalty) which nearly cancel
+ * because both raw similarities cluster around 0.55-0.65, we compute the DIFFERENCE
+ * between top-K liked and top-K disliked similarity, then amplify that signal.
+ * 
+ * This focuses on "is this article MORE like things you liked than things you disliked?"
+ * 
  * @param strengthMultiplier - User preference 0.0-1.0 (weak to strong similarity impact)
+ * @param topK - Number of most-similar embeddings to consider (default 5)
  */
 function calculateDirectContentScore(
   articleEmbedding: number[],
   likedEmbeddings: number[][],
   dislikedEmbeddings: number[][],
-  strengthMultiplier: number = 0.5
+  strengthMultiplier: number = 0.5,
+  topK: number = 5
 ): number {
-  let score = 0;
-  
-  // Calculate dynamic boost/penalty range based on user preference
-  // strengthMultiplier 0.0 = weak (+10/-10), 0.5 = medium (+55/-55), 1.0 = strong (+100/-100)
-  const maxBoost = 10 + (strengthMultiplier * 90);    // 10 to 100
-  const maxPenalty = 10 + (strengthMultiplier * 90);  // 10 to 100
-  
-  // Compare to liked articles
+  // Compute top-K average similarity for liked articles
+  let avgTopKLiked = 0;
   if (likedEmbeddings.length > 0) {
-    let totalSimilarity = 0;
+    const similarities: number[] = [];
     for (const likedEmbed of likedEmbeddings) {
-      const similarity = cosineSimilarity(articleEmbedding, likedEmbed);
-      totalSimilarity += similarity;
+      similarities.push(cosineSimilarity(articleEmbedding, likedEmbed));
     }
-    const avgLikedSimilarity = totalSimilarity / likedEmbeddings.length;
-    score += avgLikedSimilarity * maxBoost;
+    similarities.sort((a, b) => b - a);
+    const k = Math.min(topK, similarities.length);
+    let sum = 0;
+    for (let i = 0; i < k; i++) sum += similarities[i];
+    avgTopKLiked = sum / k;
   }
   
-  // Compare to disliked articles
+  // Compute top-K average similarity for disliked articles
+  let avgTopKDisliked = 0;
   if (dislikedEmbeddings.length > 0) {
-    let totalSimilarity = 0;
+    const similarities: number[] = [];
     for (const dislikedEmbed of dislikedEmbeddings) {
-      const similarity = cosineSimilarity(articleEmbedding, dislikedEmbed);
-      totalSimilarity += similarity;
+      similarities.push(cosineSimilarity(articleEmbedding, dislikedEmbed));
     }
-    const avgDislikedSimilarity = totalSimilarity / dislikedEmbeddings.length;
-    score -= avgDislikedSimilarity * maxPenalty;
+    similarities.sort((a, b) => b - a);
+    const k = Math.min(topK, similarities.length);
+    let sum = 0;
+    for (let i = 0; i < k; i++) sum += similarities[i];
+    avgTopKDisliked = sum / k;
   }
+  
+  // The raw difference is typically -0.10 to +0.10
+  // Amplify to a meaningful score range
+  // strengthMultiplier 0.0 = ±15 max, 0.5 = ±22 max, 1.0 = ±30 max
+  const amplification = 150 + (strengthMultiplier * 150); // 150 to 300
+  const diff = avgTopKLiked - avgTopKDisliked;
+  const score = diff * amplification;
   
   return Math.round(score * 100) / 100;
 }
@@ -402,7 +417,20 @@ async function handleGetFeed(
    
    if (!isLoggedOut && (likedArticleIds.length > 0 || dislikedArticleIds.length > 0)) {
      try {
-       // Fetch user's liked/disliked embeddings
+       // Helper: batch D1 queries to stay under SQL variable limit (max 50 per batch)
+       const DB_BATCH_SIZE = 50;
+       async function batchedD1Query(ids: number[], queryTemplate: (placeholders: string) => string): Promise<any[]> {
+         const allResults: any[] = [];
+         for (let i = 0; i < ids.length; i += DB_BATCH_SIZE) {
+           const batch = ids.slice(i, i + DB_BATCH_SIZE);
+           const placeholders = batch.map(() => '?').join(',');
+           const result = await env.DB.prepare(queryTemplate(placeholders)).bind(...batch).all();
+           allResults.push(...result.results);
+         }
+         return allResults;
+       }
+       
+       // Fetch user's liked/disliked embeddings from Vectorize
        let likedEmbeddings: Array<{id: string, values: number[]}> = [];
        let dislikedEmbeddings: Array<{id: string, values: number[]}> = [];
        
@@ -410,36 +438,35 @@ async function handleGetFeed(
          for (let i = 0; i < likedArticleIds.length; i += 20) {
            const batch = likedArticleIds.slice(i, i + 20);
            const batchResult = await env.VECTORIZE.getByIds(batch.map((id: number) => id.toString()));
-           if (batchResult) likedEmbeddings.push(...batchResult);
+           if (batchResult) likedEmbeddings.push(...batchResult.filter((v: any) => v.values != null));
+          }
+          console.log(`Retrieved ${likedEmbeddings.length} liked embeddings from Vectorize`);
+        }
+        
+        if (dislikedArticleIds.length > 0) {
+          for (let i = 0; i < dislikedArticleIds.length; i += 20) {
+            const batch = dislikedArticleIds.slice(i, i + 20);
+            const batchResult = await env.VECTORIZE.getByIds(batch.map((id: number) => id.toString()));
+            if (batchResult) dislikedEmbeddings.push(...batchResult.filter((v: any) => v.values != null));
          }
-         console.log(`Retrieved ${likedEmbeddings.length} liked article embeddings`);
-       }
-       
-       if (dislikedArticleIds.length > 0) {
-         for (let i = 0; i < dislikedArticleIds.length; i += 20) {
-           const batch = dislikedArticleIds.slice(i, i + 20);
-           const batchResult = await env.VECTORIZE.getByIds(batch.map((id: number) => id.toString()));
-           if (batchResult) dislikedEmbeddings.push(...batchResult);
-         }
-         console.log(`Retrieved ${dislikedEmbeddings.length} disliked article embeddings`);
+         console.log(`Retrieved ${dislikedEmbeddings.length} disliked embeddings from Vectorize`);
        }
        
        if (likedEmbeddings.length > 0 || dislikedEmbeddings.length > 0) {
-         // Batch fetch which articles have embeddings
+         // Batch fetch which feed articles have embeddings (batched to avoid D1 variable limit)
          const articleIds = articles.map(a => a.id);
-         const placeholders = articleIds.map(() => '?').join(',');
-         const embeddingStatusResult = await env.DB.prepare(`
+         const embeddingStatusRows = await batchedD1Query(articleIds, (ph) => `
            SELECT article_id 
            FROM article_embeddings 
-           WHERE article_id IN (${placeholders}) 
+           WHERE article_id IN (${ph}) 
              AND embedding_generated = 1
-         `).bind(...articleIds).all();
+         `);
          
          const hasEmbeddingSet = new Set(
-           embeddingStatusResult.results.map((r: any) => r.article_id)
+           embeddingStatusRows.map((r: any) => r.article_id)
          );
          
-         console.log(`${hasEmbeddingSet.size} out of ${articleIds.length} articles have embeddings`);
+         console.log(`${hasEmbeddingSet.size} out of ${articleIds.length} feed articles have embeddings`);
          
          // Batch fetch article embeddings from Vectorize
          const articlesWithEmbeddings = articleIds.filter(id => hasEmbeddingSet.has(id));
@@ -458,15 +485,17 @@ async function handleGetFeed(
              )
            );
            
-           embeddingBatchResults.forEach(results => {
-             if (results) {
-               results.forEach((emb: any) => {
-                 allArticleEmbeddings.set(parseInt(emb.id), emb.values);
-               });
-             }
-           });
+            embeddingBatchResults.forEach(results => {
+              if (results) {
+                results.forEach((emb: any) => {
+                  if (emb.values != null) {
+                    allArticleEmbeddings.set(parseInt(emb.id), emb.values);
+                  }
+                });
+              }
+            });
            
-           console.log(`Successfully retrieved ${allArticleEmbeddings.size} article embeddings`);
+           console.log(`Retrieved ${allArticleEmbeddings.size} article embeddings from Vectorize`);
            
            // Calculate content scores for each article
            const likedEmbeddingValues = likedEmbeddings.map(e => e.values);

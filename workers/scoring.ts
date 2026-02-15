@@ -263,13 +263,22 @@ export function calculateOnboardingScore(
  * - Mandatory category rotation in first 6 articles
  * - Diversity bonuses to prevent category domination
  */
+export interface AdoptionScoreBreakdown {
+  score: number;
+  recencyScore: number;
+  breakingBonus: number;
+  personalizationMultiplier: number;
+  diversityBonus: number;
+  contentScore: number;
+}
+
 export function calculateAdoptionScore(
   article: Article,
   recencyDecayHours: number = 24,
   seenSourceIds: Set<number> = new Set(),
   seenCategoryIds: Set<number> = new Set(),
   weights: ScoringWeights = { categories: {}, sources: {} }
-): number {
+): AdoptionScoreBreakdown {
   let score = 100;
 
   // 1. Strong recency bias (newer = much better)
@@ -277,34 +286,44 @@ export function calculateAdoptionScore(
   const now = new Date();
   const hoursOld = (now.getTime() - publishedAt.getTime()) / (1000 * 60 * 60);
   
-  // Exponential decay: very recent articles get big boost
+  // Linear decay: halved to leave room for content scoring
+  // Floor of 10 so old articles with strong content match can still surface
   const recencyMultiplier = Math.max(0.1, 1 - (hoursOld / recencyDecayHours));
   score *= recencyMultiplier;
+  score = Math.max(10, score / 2); // Halve and floor at 10
+  const recencyScore = Math.round(score * 100) / 100;
 
   // 2. Breaking news boost for very fresh content (< 2 hours)
   // High-volume sources (like Yahoo Finance) get reduced boost to prevent flooding
+  let breakingBonus = 0;
   if (hoursOld < 2) {
     // List of high-volume source IDs (>50 articles/day)
     const highVolumeSources = [4]; // Yahoo Finance
     const isHighVolume = highVolumeSources.includes(article.source_id);
     
+    const beforeBreaking = score;
     // High-volume sources get 1.4x, normal sources get 1.8x
     score *= isHighVolume ? 1.4 : 1.8;
+    breakingBonus = Math.round((score - beforeBreaking) * 100) / 100;
   }
 
   // 3. PERSONALIZATION: Apply interest weights to boost preferred categories/sources
   const categoryWeight = weights.categories[article.category_id] || 1.0;
   const sourceWeight = weights.sources[article.source_id] || 1.0;
+  const personalizationMultiplier = Math.round(categoryWeight * sourceWeight * 100) / 100;
   score *= categoryWeight * sourceWeight;
 
    // 4. DIVERSITY bonus: reward unseen categories and sources
    // ADDITIVE (not multiplicative) to preserve score differentiation between articles
+   let diversityBonus = 0;
    if (!seenCategoryIds.has(article.category_id)) {
      score += 15; // Fixed bonus for new category
+     diversityBonus += 15;
    }
    
    if (!seenSourceIds.has(article.source_id)) {
      score += 10; // Fixed bonus for new source
+     diversityBonus += 10;
    }
 
   // 5. Add fine-grained time variance to prevent clustering
@@ -321,7 +340,14 @@ export function calculateAdoptionScore(
    const contentScore = (article as any).contentScore || 0;
    score += contentScore;
 
-   return Math.round(score * 100) / 100;
+   return {
+     score: Math.round(score * 100) / 100,
+     recencyScore,
+     breakingBonus,
+     personalizationMultiplier,
+     diversityBonus,
+     contentScore
+   };
 }
 
 /**
@@ -577,16 +603,23 @@ export function scoreAndSortArticlesAdoption(
    // Score all articles with adoption algorithm
    // IMPORTANT: We must update seenCategoryIds/seenSourceIds as we go
    // so that the diversity bonus only applies to the FIRST article from each category/source
-   const scoredArticles: Article[] = [];
+    const scoredArticles: Article[] = [];
    for (const article of articles) {
-     const score = calculateAdoptionScore(
+     const breakdown = calculateAdoptionScore(
        article,
        recencyDecayHours,
        seenSourceIds,
        seenCategoryIds,
        weights
      );
-     scoredArticles.push({ ...article, score });
+     scoredArticles.push({
+       ...article,
+       score: breakdown.score,
+       recencyScore: breakdown.recencyScore,
+       breakingBonus: breakdown.breakingBonus,
+       personalizationMultiplier: breakdown.personalizationMultiplier,
+       diversityBonus: breakdown.diversityBonus,
+     });
      seenCategoryIds.add(article.category_id);
      seenSourceIds.add(article.source_id);
    }
