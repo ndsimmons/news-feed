@@ -51,34 +51,20 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
   const [stopBouncing, setStopBouncing] = useState(false);
   const [isSaved, setIsSaved] = useState(isSavedView); // If in saved view, article is already saved
   const [isSaving, setIsSaving] = useState(false);
-  // ALWAYS use adjustedScore (normalized), never raw score
-  const [currentScore, setCurrentScore] = useState<number | undefined>(article.adjustedScore);
+  // Show raw score directly for transparent ranking
+  const [currentScore, setCurrentScore] = useState<number | undefined>(article.score);
   const [scoreUpdating, setScoreUpdating] = useState(false);
-  const [showScoreTooltip, setShowScoreTooltip] = useState(false);
+
   const cardRef = useRef<HTMLElement>(null);
 
-  // Debug: Log if we're missing adjustedScore but have raw score
+  // Debug: Log if we're missing score
   useEffect(() => {
-    if (article.score !== undefined && article.adjustedScore === undefined) {
-      console.error(`⚠️ Article ${article.id} has raw score (${article.score}) but NO adjustedScore!`);
+    if (article.score === undefined) {
+      console.error(`⚠️ Article ${article.id} has no score!`);
     }
   }, []);
 
-  // Calculate percentile for a score in a normal distribution (mean=50, stdDev=20)
-  const calculatePercentile = (score: number): number => {
-    const mean = 50;
-    const stdDev = 20;
-    const zScore = (score - mean) / stdDev;
-    
-    // Approximation of cumulative distribution function (CDF) for normal distribution
-    // Using error function approximation
-    const t = 1 / (1 + 0.2316419 * Math.abs(zScore));
-    const d = 0.3989423 * Math.exp(-zScore * zScore / 2);
-    const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
-    const cdf = zScore > 0 ? 1 - p : p;
-    
-    return Math.round(cdf * 100);
-  };
+
   
   // Debug log on mount
   useEffect(() => {
@@ -102,7 +88,7 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
 
       if (response.ok) {
         const data = await response.json();
-        setCurrentScore(data.adjustedScore);
+        setCurrentScore(data.score);
         
         // Remove highlight after 2 seconds
         setTimeout(() => setScoreUpdating(false), 2000);
@@ -594,23 +580,15 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
               {currentScore !== undefined && (
                 <div className="relative inline-block ml-3">
                   <span 
-                    className={`text-blue-600 cursor-help transition-all duration-500 ${
+                    className={`text-blue-600 transition-all duration-500 ${
                       scoreUpdating ? 'bg-blue-100 px-2 py-0.5 rounded' : ''
                     }`}
-                    onMouseEnter={() => setShowScoreTooltip(true)}
-                    onMouseLeave={() => setShowScoreTooltip(false)}
+
                   >
                     Score: {currentScore.toFixed(1)}
                   </span>
                   
-                  {/* Score tooltip */}
-                  {showScoreTooltip && (
-                    <div className="absolute z-50 left-full ml-2 top-1/2 -translate-y-1/2 w-56 p-2 bg-gray-900 text-white text-xs rounded-lg shadow-xl">
-                      <div>Score <span className="text-blue-300 font-semibold">{currentScore.toFixed(0)}</span> is in the top <span className="text-green-300 font-semibold">{100 - calculatePercentile(currentScore)}%</span> of all articles</div>
-                      {/* Arrow pointing left */}
-                      <div className="absolute right-full top-1/2 -translate-y-1/2 w-0 h-0 border-t-4 border-t-transparent border-b-4 border-b-transparent border-r-4 border-r-gray-900"></div>
-                    </div>
-                  )}
+
                 </div>
               )}
             </div>
