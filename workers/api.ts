@@ -11,6 +11,8 @@ import type {
 } from '../src/lib/types';
 import { 
   calculateArticleScore, 
+  calculateAdoptionScore,
+  calculateOnboardingScore,
   updateWeights, 
   interestWeightsToScoringWeights,
   getTopArticles,
@@ -2519,40 +2521,42 @@ async function handleRecalculateScore(
     // Recalculate score using adoption algorithm
     let newScore = 0;
     if (isAdoption) {
-      const { calculateAdoptionScore } = await import('./scoring');
-      newScore = calculateAdoptionScore(
+      const breakdown = calculateAdoptionScore(
         article,
         recencyDecayHours,
         new Set(),
         new Set(),
         weights
       );
+      newScore = breakdown.score;
     } else {
-      const { calculateOnboardingScore } = await import('./scoring');
       newScore = calculateOnboardingScore(article, new Set(), new Set());
     }
 
-    // To calculate adjusted score, we need the distribution of all current feed articles
-    // Get a sample of recent articles to calculate the distribution
+    // Build normalization pool from recent articles, scored consistently
     const recentArticles = await env.DB.prepare(`
       SELECT a.*, s.name as source_name, c.name as category_name, c.slug as category_slug
       FROM articles a
       LEFT JOIN sources s ON a.source_id = s.id
       LEFT JOIN categories c ON a.category_id = c.id
       WHERE a.published_at > datetime('now', '-7 days')
+      ORDER BY a.published_at DESC
       LIMIT 100
     `).all();
 
-    // Score all articles to get distribution
+    // Score all articles with proper sequential diversity tracking
+    const poolSeenSources = new Set<number>();
+    const poolSeenCategories = new Set<number>();
     const scoredArticles = recentArticles.results.map((a: any) => {
       let score = 0;
       if (isAdoption) {
-        const { calculateAdoptionScore } = require('./scoring');
-        score = calculateAdoptionScore(a, recencyDecayHours, new Set(), new Set(), weights);
+        const breakdown = calculateAdoptionScore(a, recencyDecayHours, poolSeenSources, poolSeenCategories, weights);
+        score = breakdown.score;
       } else {
-        const { calculateOnboardingScore } = require('./scoring');
-        score = calculateOnboardingScore(a, new Set(), new Set());
+        score = calculateOnboardingScore(a, poolSeenSources, poolSeenCategories);
       }
+      poolSeenSources.add(a.source_id);
+      poolSeenCategories.add(a.category_id);
       return { ...a, score };
     });
 
@@ -2562,7 +2566,7 @@ async function handleRecalculateScore(
     
     // Find the updated article in normalized results
     const updatedArticle = normalized.find((a: any) => a.id === articleId);
-    const adjustedScore = updatedArticle?.adjustedScore || 50;
+    const adjustedScore = updatedArticle?.adjustedScore ?? 50;
 
     return new Response(JSON.stringify({ 
       success: true,
