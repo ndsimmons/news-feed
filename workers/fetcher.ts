@@ -218,15 +218,152 @@ async function fetchFromAPI(source: Source): Promise<Partial<Article>[]> {
 }
 
 /**
- * Fetch articles from web scraping
- * Placeholder - implement based on specific site
+ * Fetch articles from web scraping (sitemap or homepage)
  */
 async function fetchFromScrape(source: Source): Promise<Partial<Article>[]> {
-  console.log(`Web scraping not yet implemented for ${source.name}`);
+  const config = typeof source.config === 'string' 
+    ? JSON.parse(source.config) 
+    : source.config;
+
+  const scrapeUrl = config.scrape_url || source.url;
+  if (!scrapeUrl) {
+    console.log(`No scrape URL configured for ${source.name}`);
+    return [];
+  }
+
+  const origin = new URL(scrapeUrl).origin;
+  let articleUrls: string[] = [];
+
+  // If sitemap-based, fetch article URLs from sitemap
+  if (config.use_sitemap && config.sitemap_url) {
+    try {
+      const sitemapRes = await fetch(config.sitemap_url, {
+        headers: { 'User-Agent': 'NewsFeedAggregator/1.0' },
+        redirect: 'follow'
+      });
+      if (sitemapRes.ok) {
+        const sitemapText = await sitemapRes.text();
+        
+        // Handle sitemap index (contains links to other sitemaps)
+        if (sitemapText.includes('<sitemapindex')) {
+          const subSitemaps = [...sitemapText.matchAll(/<loc>([^<]+)<\/loc>/gi)]
+            .map(m => m[1])
+            .filter(u => u.includes('post') || u.includes('article') || u.includes('news'))
+            .slice(0, 2); // Only check first 2 relevant sub-sitemaps
+          
+          for (const subUrl of subSitemaps) {
+            try {
+              const subRes = await fetch(subUrl, { headers: { 'User-Agent': 'NewsFeedAggregator/1.0' } });
+              if (subRes.ok) {
+                const subText = await subRes.text();
+                const urls = [...subText.matchAll(/<loc>([^<]+)<\/loc>/gi)].map(m => m[1]);
+                articleUrls.push(...urls);
+              }
+            } catch (e) { /* skip */ }
+          }
+        } else {
+          articleUrls = [...sitemapText.matchAll(/<loc>([^<]+)<\/loc>/gi)].map(m => m[1]);
+        }
+
+        // Filter to likely article URLs
+        articleUrls = articleUrls.filter(u => {
+          const p = new URL(u).pathname;
+          return p !== '/' && p.split('/').filter(Boolean).length >= 2;
+        });
+      }
+    } catch (e) {
+      console.error(`Failed to fetch sitemap for ${source.name}:`, e);
+    }
+  }
+
+  // Fallback: scrape homepage for article links
+  if (articleUrls.length === 0) {
+    try {
+      const res = await fetch(scrapeUrl, {
+        headers: { 'User-Agent': 'NewsFeedAggregator/1.0' },
+        redirect: 'follow'
+      });
+      const html = await res.text();
+      const linkMatches = html.matchAll(/<a[^>]+href=["']([^"']+)["'][^>]*>/gi);
+      for (const m of linkMatches) {
+        try {
+          const href = new URL(m[1], origin).href;
+          if (href.startsWith(origin)) {
+            const path = new URL(href).pathname;
+            if (path !== '/' && path.split('/').filter(Boolean).length >= 2 
+                && !path.match(/\.(css|js|png|jpg|gif|svg|ico)$/i)
+                && !path.match(/^\/?(tag|category|author|page|search|login|signup|about|contact|privacy|terms)/i)) {
+              if (!articleUrls.includes(href)) articleUrls.push(href);
+            }
+          }
+        } catch (e) { /* skip */ }
+      }
+    } catch (e) {
+      console.error(`Failed to scrape homepage for ${source.name}:`, e);
+    }
+  }
+
+  // Only process the 20 most recent (sitemap URLs are often newest-first)
+  articleUrls = articleUrls.slice(0, 20);
+
+  console.log(`Found ${articleUrls.length} article URLs for ${source.name}`);
+
+  // Fetch each article page and extract metadata
+  const articles: Partial<Article>[] = [];
+  for (const articleUrl of articleUrls) {
+    try {
+      const res = await fetch(articleUrl, {
+        headers: { 'User-Agent': 'NewsFeedAggregator/1.0' },
+        redirect: 'follow'
+      });
+      if (!res.ok) continue;
+      const html = await res.text();
+
+      // Extract metadata from Open Graph / meta tags
+      const title = extractMeta(html, 'og:title') || extractMeta(html, 'twitter:title') || extractHtmlTag(html, 'title');
+      const summary = extractMeta(html, 'og:description') || extractMeta(html, 'description') || extractMeta(html, 'twitter:description');
+      const image = extractMeta(html, 'og:image') || extractMeta(html, 'twitter:image');
+      const author = extractMeta(html, 'author') || extractMeta(html, 'article:author');
+      const publishedTime = extractMeta(html, 'article:published_time') || extractMeta(html, 'date') || extractMeta(html, 'pubdate');
+
+      if (title) {
+        articles.push({
+          title: title.trim(),
+          summary: summary?.trim() || null,
+          url: articleUrl,
+          published_at: publishedTime || new Date().toISOString(),
+          image_url: image || null,
+          author: author || null
+        });
+      }
+    } catch (e) {
+      console.log(`Failed to scrape article: ${articleUrl}`);
+    }
+  }
+
+  console.log(`Extracted ${articles.length} articles from ${source.name}`);
+  return articles;
+}
+
+/** Extract meta tag content by property or name */
+function extractMeta(html: string, key: string): string | null {
+  // Try property="key"
+  const propMatch = html.match(new RegExp(`<meta[^>]+property=["']${key}["'][^>]+content=["']([^"']+)["']`, 'i'))
+    || html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']${key}["']`, 'i'));
+  if (propMatch) return propMatch[1];
   
-  // TODO: Implement web scraping with selectors from config
+  // Try name="key"
+  const nameMatch = html.match(new RegExp(`<meta[^>]+name=["']${key}["'][^>]+content=["']([^"']+)["']`, 'i'))
+    || html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+name=["']${key}["']`, 'i'));
+  if (nameMatch) return nameMatch[1];
   
-  return [];
+  return null;
+}
+
+/** Extract content from an HTML tag */
+function extractHtmlTag(html: string, tag: string): string | null {
+  const match = html.match(new RegExp(`<${tag}[^>]*>([^<]+)</${tag}>`, 'i'));
+  return match ? match[1].trim() : null;
 }
 
 /**

@@ -160,6 +160,10 @@ export default {
         return await handleAddSource(request, env, corsHeaders);
       }
 
+      if (path === '/api/discover-source' && request.method === 'POST') {
+        return await handleDiscoverSource(request, env, corsHeaders);
+      }
+
       if (path.startsWith('/api/sources/') && request.method === 'DELETE') {
         return await handleDeleteSource(request, env, corsHeaders);
       }
@@ -379,10 +383,15 @@ async function handleGetFeed(
         AND v.article_id = a.id
         AND v.vote = -1
     )
+    AND NOT EXISTS (
+      SELECT 1 FROM saved_articles sa
+      WHERE sa.user_id = ?
+        AND sa.article_id = a.id
+    )
     AND (usp.active IS NULL OR usp.active = 1)
   `;
 
-  const params: any[] = [userId, userId, userId]; // Add userId for source prefs, impression filter, and downvote filter
+  const params: any[] = [userId, userId, userId, userId]; // Add userId for source prefs, impression filter, downvote filter, and saved filter
 
   if (categorySlug) {
     query += ' AND c.slug = ?';
@@ -394,13 +403,20 @@ async function handleGetFeed(
   let articles: Article[] = [];
   
    if (!categorySlug) {
-     // Fetch 1000 most recent articles regardless of category
-     // Larger sample = better normalization + let scores determine what rises to the top
-     const allQuery = query + ' ORDER BY a.published_at DESC LIMIT 1000';
+     // Fetch top 50 most recent articles PER SOURCE to ensure no single high-volume
+     // source crowds out others. This guarantees every source gets fair representation
+     // in the candidate pool before scoring runs, and that any article visible in a
+     // category feed is also a candidate in the All feed.
+     const allQuery = `
+       SELECT * FROM (
+         SELECT ranked.*, ROW_NUMBER() OVER (PARTITION BY ranked.source_id ORDER BY ranked.published_at DESC) as rn
+         FROM (${query}) ranked
+       ) WHERE rn <= 50
+     `;
      const allResult = await env.DB.prepare(allQuery).bind(...params).all();
      articles = allResult.results as Article[];
      
-     console.log(`Fetched ${articles.length} articles (all categories, scored on merit)`);
+     console.log(`Fetched ${articles.length} articles (top 50 per source, balanced across sources)`);
    } else {
     // CATEGORY FILTERED: Fetch by recency for specific category
     query += ' ORDER BY a.published_at DESC LIMIT 100';
@@ -891,6 +907,182 @@ async function handleAddSource(
   return new Response(JSON.stringify({ success: true, id: result.meta.last_row_id }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   });
+}
+
+/**
+ * POST /api/discover-source - Probe a URL to find the best way to fetch articles
+ * Tries: 1) RSS/Atom link tags in HTML  2) common feed paths  3) sitemap.xml  4) scrape fallback
+ */
+async function handleDiscoverSource(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  try {
+    const { url } = await request.json() as { url: string };
+    if (!url) {
+      return new Response(JSON.stringify({ error: 'URL required' }), {
+        status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Normalize URL
+    let baseUrl = url.trim();
+    if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
+    const parsedUrl = new URL(baseUrl);
+    const origin = parsedUrl.origin;
+
+    // Fetch the homepage HTML
+    let html = '';
+    let siteName = parsedUrl.hostname.replace('www.', '');
+    try {
+      const res = await fetch(baseUrl, {
+        headers: { 'User-Agent': 'NewsFeedAggregator/1.0' },
+        redirect: 'follow'
+      });
+      html = await res.text();
+      
+      // Try to extract site name from <title> or og:site_name
+      const ogSiteName = html.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i);
+      const titleTag = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+      if (ogSiteName) siteName = ogSiteName[1].trim();
+      else if (titleTag) siteName = titleTag[1].trim().split(/[|\-–—]/)[0].trim();
+    } catch (e) {
+      console.error('Failed to fetch homepage:', e);
+    }
+
+    // Strategy 1: Look for RSS/Atom link tags in HTML
+    const feedLinks = html.matchAll(/<link[^>]+type=["'](application\/(rss|atom)\+xml|text\/xml)["'][^>]*>/gi);
+    for (const match of feedLinks) {
+      const hrefMatch = match[0].match(/href=["']([^"']+)["']/i);
+      if (hrefMatch) {
+        const feedUrl = new URL(hrefMatch[1], origin).href;
+        // Verify it's a valid feed
+        try {
+          const feedRes = await fetch(feedUrl, { headers: { 'User-Agent': 'NewsFeedAggregator/1.0' } });
+          const feedText = await feedRes.text();
+          if (feedText.includes('<rss') || feedText.includes('<feed') || feedText.includes('<channel')) {
+            const itemCount = (feedText.match(/<item[\s>]/gi) || feedText.match(/<entry[\s>]/gi) || []).length;
+            return new Response(JSON.stringify({
+              success: true,
+              name: siteName,
+              url: origin,
+              fetch_method: 'rss',
+              config: { rss_url: feedUrl },
+              articles_found: itemCount,
+              discovery_method: 'link_tag'
+            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+          }
+        } catch (e) { /* try next */ }
+      }
+    }
+
+    // Strategy 2: Try common feed paths
+    const commonPaths = [
+      '/feed', '/feed/', '/rss', '/rss/', '/rss.xml', '/feed.xml', '/atom.xml',
+      '/feeds/posts/default', '/blog/feed', '/index.xml', '/.rss'
+    ];
+    for (const path of commonPaths) {
+      try {
+        const feedUrl = origin + path;
+        const feedRes = await fetch(feedUrl, {
+          headers: { 'User-Agent': 'NewsFeedAggregator/1.0' },
+          redirect: 'follow'
+        });
+        if (feedRes.ok) {
+          const feedText = await feedRes.text();
+          if (feedText.includes('<rss') || feedText.includes('<feed') || feedText.includes('<channel')) {
+            const itemCount = (feedText.match(/<item[\s>]/gi) || feedText.match(/<entry[\s>]/gi) || []).length;
+            return new Response(JSON.stringify({
+              success: true,
+              name: siteName,
+              url: origin,
+              fetch_method: 'rss',
+              config: { rss_url: feedUrl },
+              articles_found: itemCount,
+              discovery_method: 'common_path'
+            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+          }
+        }
+      } catch (e) { /* try next */ }
+    }
+
+    // Strategy 3: Check sitemap.xml for article URLs
+    try {
+      const sitemapRes = await fetch(origin + '/sitemap.xml', {
+        headers: { 'User-Agent': 'NewsFeedAggregator/1.0' },
+        redirect: 'follow'
+      });
+      if (sitemapRes.ok) {
+        const sitemapText = await sitemapRes.text();
+        if (sitemapText.includes('<urlset') || sitemapText.includes('<sitemapindex')) {
+          // Extract URLs from sitemap
+          const urls = [...sitemapText.matchAll(/<loc>([^<]+)<\/loc>/gi)].map(m => m[1]);
+          // Filter to likely article URLs (contain path segments, not just homepage)
+          const articleUrls = urls.filter(u => {
+            const p = new URL(u).pathname;
+            return p !== '/' && p.split('/').filter(Boolean).length >= 2;
+          });
+          
+          return new Response(JSON.stringify({
+            success: true,
+            name: siteName,
+            url: origin,
+            fetch_method: 'scrape',
+            config: { 
+              scrape_url: baseUrl,
+              sitemap_url: origin + '/sitemap.xml',
+              use_sitemap: true
+            },
+            articles_found: articleUrls.length,
+            discovery_method: 'sitemap'
+          }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+      }
+    } catch (e) { /* try next */ }
+
+    // Strategy 4: Scrape fallback — extract article links from homepage
+    const articleLinks: string[] = [];
+    const linkMatches = html.matchAll(/<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi);
+    for (const m of linkMatches) {
+      try {
+        const href = new URL(m[1], origin).href;
+        // Only include links on the same domain with meaningful paths
+        if (href.startsWith(origin)) {
+          const path = new URL(href).pathname;
+          if (path !== '/' && path.split('/').filter(Boolean).length >= 2 && !path.match(/\.(css|js|png|jpg|gif|svg|ico)$/i)) {
+            if (!articleLinks.includes(href)) articleLinks.push(href);
+          }
+        }
+      } catch (e) { /* skip bad URLs */ }
+    }
+
+    if (articleLinks.length > 0) {
+      return new Response(JSON.stringify({
+        success: true,
+        name: siteName,
+        url: origin,
+        fetch_method: 'scrape',
+        config: { 
+          scrape_url: baseUrl,
+          use_sitemap: false
+        },
+        articles_found: articleLinks.length,
+        discovery_method: 'scrape'
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
+    return new Response(JSON.stringify({
+      success: false,
+      error: 'Could not find any articles or feeds at this URL'
+    }), { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    console.error('Error discovering source:', error);
+    return new Response(JSON.stringify({ error: 'Failed to discover source' }), {
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
 }
 
 /**
@@ -1630,18 +1822,11 @@ async function handleSeedAlgorithm(
     `).bind(userId, articleId, interactionType, categoryId, sourceId).run();
 
     // If interaction was upvote or downvote, actually cast the vote
-    if (interactionType === 'upvote' || interactionType === 'downvote') {
-      const voteValue = interactionType === 'upvote' ? 1 : -1;
-      
-      await env.DB.prepare(`
-        INSERT INTO votes (user_id, article_id, vote)
-        VALUES (?, ?, ?)
-        ON CONFLICT(user_id, article_id) 
-        DO UPDATE SET vote = ?, voted_at = datetime('now')
-      `).bind(userId, articleId, voteValue, voteValue).run();
-      
-      console.log(`Cast ${interactionType} vote for user ${userId} on article ${articleId}`);
-    }
+    // Note: seed interactions are NOT inserted into the votes table.
+    // The seed only influences interest weights and the seed_articles table.
+    // This ensures the vote count accurately reflects in-feed user interactions,
+    // so the onboarding→adoption transition and celebration modal trigger at
+    // exactly 10 user-visible votes.
 
     // If interaction was save, save the article
     if (interactionType === 'save') {

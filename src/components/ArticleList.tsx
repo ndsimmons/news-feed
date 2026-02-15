@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import FeedCard from './FeedCard';
+import { DiscoveryModeCard } from './DiscoveryModeBadge';
 import CategoryFilter from './CategoryFilter';
 import AuthModal from './AuthModal';
 import CelebrationModal from './CelebrationModal';
@@ -8,7 +9,7 @@ import { API_BASE_URL } from '../lib/config';
 import { useAuth } from '../lib/auth';
 
 export default function ArticleList() {
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, loading: authLoading } = useAuth();
   const [articles, setArticles] = useState<Article[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -30,6 +31,9 @@ export default function ArticleList() {
   const [voteCount, setVoteCount] = useState(0);
 
   useEffect(() => {
+    // Wait for auth to resolve before fetching so we send the correct userId
+    if (authLoading) return;
+    
     setPage(1);
     setArticles([]);
     setHasMore(true);
@@ -39,7 +43,7 @@ export default function ArticleList() {
     fetch(`${API_BASE_URL}/api/refresh`, { method: 'POST' }).catch(err =>
       console.log('Refresh trigger failed:', err)
     );
-  }, [category]);
+  }, [category, authLoading, user?.id]);
 
   // Fetch vote count when authenticated
   useEffect(() => {
@@ -104,17 +108,7 @@ export default function ArticleList() {
     return () => window.removeEventListener('first-interaction-applied', handleFirstInteractionApplied as EventListener);
   }, [user]);
 
-  // Refresh feed when authentication state changes (login/logout)
-  useEffect(() => {
-    // Skip on initial mount (loading is true)
-    if (!loading) {
-      console.log('Auth state changed - refreshing feed');
-      setArticles([]);
-      setPage(1);
-      setHasMore(true);
-      fetchArticles(true);
-    }
-  }, [isAuthenticated]);
+  // Note: login/logout triggers re-fetch via [user] dependency in the main effect above
 
   // Listen for personalize button click from header
   useEffect(() => {
@@ -196,25 +190,43 @@ export default function ArticleList() {
     };
   }, []);
 
-  // Refresh feed when tab becomes visible (cross-device sync)
+  // Soft-refresh feed when tab becomes visible after extended absence
+  // Does NOT clear existing articles — preserves scroll position and interaction state
   useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (!document.hidden) {
+    const handleVisibilityChange = async () => {
+      if (!document.hidden && isAuthenticated && user) {
         const feedAge = Date.now() - lastFetchTime;
-        // Refresh if feed is older than 5 minutes
+        // Only refresh if feed is older than 5 minutes
         if (feedAge > 5 * 60 * 1000) {
-          console.log('Feed is stale - refreshing after', Math.round(feedAge / 1000), 'seconds');
-          setArticles([]);
-          setPage(1);
-          setHasMore(true);
-          fetchArticles(true);
+          console.log('Feed is stale - soft-refreshing after', Math.round(feedAge / 1000), 'seconds');
+          // Silently re-fetch page 1 and update articles without clearing
+          try {
+            const params = new URLSearchParams({
+              limit: '30',
+              userId: user.id.toString(),
+              _t: Date.now().toString()
+            });
+            if (category && category !== 'saved') {
+              params.set('category', category);
+            }
+            const response = await fetch(`${API_BASE_URL}/api/feed?${params}`, { cache: 'no-store' });
+            if (response.ok) {
+              const data = await response.json();
+              setArticles(data.articles);
+              setPage(1);
+              setHasMore(data.hasMore);
+              setLastFetchTime(Date.now());
+            }
+          } catch (err) {
+            console.log('Soft refresh failed:', err);
+          }
         }
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [lastFetchTime]);
+  }, [lastFetchTime, isAuthenticated, user, category]);
 
   // Track article impressions - batch send every 3 seconds
   useEffect(() => {
@@ -542,6 +554,9 @@ export default function ArticleList() {
           </div>
         ) : (
           <div className="space-y-0">
+            {isAuthenticated && user && voteCount < 10 && (
+              <DiscoveryModeCard userId={user.id} />
+            )}
             {articles.map((article) => (
               <FeedCard
                 key={article.id}

@@ -348,7 +348,10 @@ export function scoreAndSortArticlesOnboardingWithSeed(
   const seenCategoryIds = new Set<number>();
   
   // Score all articles with seed boost
-  const scoredArticles = articles.map(article => {
+  // IMPORTANT: Update seenCategoryIds/seenSourceIds as we go
+  // so that the diversity bonus only applies to the FIRST article from each category/source
+  const scoredArticles: Article[] = [];
+  for (const article of articles) {
     let score = calculateOnboardingScore(article, seenSourceIds, seenCategoryIds);
     
     // MASSIVE boost for same category as seed (3x multiplier)
@@ -361,11 +364,10 @@ export function scoreAndSortArticlesOnboardingWithSeed(
       score *= 2.0;
     }
     
-    return {
-      ...article,
-      score
-    };
-  });
+    scoredArticles.push({ ...article, score });
+    seenCategoryIds.add(article.category_id);
+    seenSourceIds.add(article.source_id);
+  }
 
   // Sort by score
   scoredArticles.sort((a, b) => (b.score || 0) - (a.score || 0));
@@ -466,14 +468,19 @@ export function scoreAndSortArticlesOnboarding(
   const seenCategoryIds = new Set<number>();
   
   // Score all articles with onboarding algorithm
-  const scoredArticles = articles.map(article => ({
-    ...article,
-    score: calculateOnboardingScore(
+  // IMPORTANT: Update seenCategoryIds/seenSourceIds as we go
+  // so that the diversity bonus only applies to the FIRST article from each category/source
+  const scoredArticles: Article[] = [];
+  for (const article of articles) {
+    const score = calculateOnboardingScore(
       article,
       seenSourceIds,
       seenCategoryIds
-    )
-  }));
+    );
+    scoredArticles.push({ ...article, score });
+    seenCategoryIds.add(article.category_id);
+    seenSourceIds.add(article.source_id);
+  }
 
   // Sort by score
   scoredArticles.sort((a, b) => (b.score || 0) - (a.score || 0));
@@ -612,55 +619,12 @@ export function scoreAndSortArticlesAdoption(
   // Sort by score
   scoredArticles.sort((a, b) => (b.score || 0) - (a.score || 0));
 
-  // PHASE 1: MANDATORY CATEGORY ROTATION - First 6 articles MUST be from different categories
-  // This guarantees variety at the top of the feed
+  // SCORE-BASED SELECTION WITH DIMINISHING RETURNS FOR REPEATED SOURCES
+  // Apply penalty to prevent any single source from dominating the feed
+  // (No forced category rotation for adoption — let scores determine order)
   const diverseArticles: Article[] = [];
   const articlePool = [...scoredArticles];
-  const usedCategoriesInFirstSix = new Set<number>();
-  
-  // Get all unique category IDs available
-  const availableCategories = new Set(articlePool.map(a => a.category_id));
-  
-  // Force one article from each category in first 6 spots (up to 6 categories)
-  const targetFirstArticles = Math.min(6, availableCategories.size);
-  
-  for (let slot = 0; slot < targetFirstArticles && articlePool.length > 0; slot++) {
-    // Find the best article from an unseen category
-    let bestIndex = -1;
-    let bestScore = -1;
-    
-    for (let i = 0; i < articlePool.length; i++) {
-      const article = articlePool[i];
-      
-      // Skip if we've already used this category in first 6
-      if (usedCategoriesInFirstSix.has(article.category_id)) continue;
-      
-      const score = article.score || 0;
-      if (score > bestScore) {
-        bestScore = score;
-        bestIndex = i;
-      }
-    }
-    
-    if (bestIndex >= 0) {
-      const selectedArticle = articlePool.splice(bestIndex, 1)[0];
-      diverseArticles.push(selectedArticle);
-      usedCategoriesInFirstSix.add(selectedArticle.category_id);
-      seenCategoryIds.add(selectedArticle.category_id);
-      seenSourceIds.add(selectedArticle.source_id);
-    } else {
-      break; // No more unique categories available
-    }
-  }
-  
-  // PHASE 2: SCORE-BASED SELECTION WITH DIMINISHING RETURNS FOR REPEATED SOURCES
-  // Apply penalty to prevent any single source from dominating the feed
   const sourceCountMap = new Map<number, number>();
-  
-  // Initialize counts from Phase 1
-  for (const article of diverseArticles) {
-    sourceCountMap.set(article.source_id, (sourceCountMap.get(article.source_id) || 0) + 1);
-  }
   
   while (articlePool.length > 0 && diverseArticles.length < 100) {
     // Apply diminishing returns penalty to articles from repeated sources

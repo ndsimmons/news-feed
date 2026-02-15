@@ -162,7 +162,7 @@ export default function SavedArticles() {
                 isAuthenticated={isAuthenticated}
                 userId={user?.id || 1}
                 isSavedView={true}
-                onArticleRemoved={handleArticleRemoved}
+                onArticleRemoved={handleUnsave}
               />
             ))}
           </div>

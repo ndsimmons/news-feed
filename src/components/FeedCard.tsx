@@ -44,6 +44,13 @@ interface FeedCardProps {
 export default function FeedCard({ article, onVote, isAuthenticated = false, userId = 0, isSavedView = false, onArticleRemoved }: FeedCardProps) {
   const [isVoting, setIsVoting] = useState(false);
   const [userVote, setUserVote] = useState<number>(article.userVote || 0);
+  
+  // Sync vote state when article prop updates (e.g., after feed re-fetch)
+  useEffect(() => {
+    if (article.userVote !== undefined) {
+      setUserVote(article.userVote);
+    }
+  }, [article.userVote]);
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [showVoteFeedback, setShowVoteFeedback] = useState(false);
@@ -105,32 +112,7 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
       return;
     }
     
-    // Double-check auth state: Check both React state AND localStorage token
-    // This prevents Safari privacy mode from incorrectly blocking navigation
-    const hasToken = !!localStorage.getItem('auth_token');
-    const isActuallyAuthenticated = isAuthenticated || hasToken;
-    
-    // Only block navigation if BOTH checks confirm user is not authenticated
-    if (!isActuallyAuthenticated) {
-      localStorage.setItem('first_interaction', JSON.stringify({
-        type: 'click',
-        articleId: article.id,
-        articleTitle: article.title,
-        categoryId: article.category_id,
-        sourceId: article.source_id,
-        timestamp: Date.now()
-      }));
-      
-      // Dispatch event to open auth modal
-      window.dispatchEvent(new CustomEvent('open-auth-modal', { 
-        detail: { firstInteraction: true }
-      }));
-      
-      e.preventDefault();
-      return;
-    }
-    
-    // If authenticated, article link works normally (no special handling needed)
+    // Article clicks work for all users (no auth required to read articles)
   };
 
   const handleVote = async (vote: number) => {
@@ -262,6 +244,12 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
         
         if (!response.ok) throw new Error('Failed to save');
         setIsSaved(true);
+        
+        // Saves count as likes for the algorithm (inserted into votes table)
+        // so notify the vote counter to keep it in sync
+        if (userVote === 0) {
+          window.dispatchEvent(new CustomEvent('vote-cast'));
+        }
         
         // Recalculate score after save (saves count as likes)
         recalculateScore();
@@ -549,7 +537,7 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
         <div className="flex-1 min-w-0 relative z-10">
           <h3 className="article-title">
             <a 
-              href={article.spotify_url || article.url} 
+              href={article.spotify_url || (article.url?.includes('nytimes.com') ? `https://archive.is/newest/${article.url}` : article.url)} 
               target="_blank" 
               rel="noopener noreferrer"
               onClick={handleArticleClick}
@@ -593,63 +581,68 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
               )}
             </div>
             
-            {!showVoteFeedback && userVote !== 1 && (
               <div className="flex gap-2">
+                {!isSavedView && (
+                  <>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleVote(1);
+                      }}
+                      disabled={isVoting}
+                      className={`vote-button upvote ${userVote === 1 ? 'voted' : ''}`}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill={userVote === 1 ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path>
+                      </svg>
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleVote(-1);
+                      }}
+                      disabled={isVoting}
+                      className={`vote-button downvote ${userVote === -1 ? 'voted' : ''}`}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill={userVote === -1 ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"></path>
+                      </svg>
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleSaveToggle();
+                      }}
+                      disabled={isSaving}
+                      className={`vote-button save ${isSaved ? 'voted' : ''}`}
+                      title={isSaved ? 'Unsave article' : 'Save for later'}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill={isSaved ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
+                      </svg>
+                    </button>
+                  </>
+                )}
                 <button
-                  onClick={(e) => {
+                  onClick={async (e) => {
                     e.stopPropagation();
-                    handleVote(1);
+                    const shareData = { title: article.title, url: article.url };
+                    if (navigator.share) {
+                      try { await navigator.share(shareData); } catch {}
+                    } else {
+                      await navigator.clipboard.writeText(article.url);
+                    }
                   }}
-                  disabled={isVoting}
-                  className={`vote-button upvote ${userVote === 1 ? 'voted' : ''}`}
+                  className="vote-button"
+                  title="Share article"
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path>
-                  </svg>
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleVote(-1);
-                  }}
-                  disabled={isVoting}
-                  className={`vote-button downvote ${userVote === -1 ? 'voted' : ''}`}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"></path>
-                  </svg>
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleSaveToggle();
-                  }}
-                  disabled={isSaving}
-                  className={`vote-button save ${isSaved ? 'voted' : ''}`}
-                  title={isSaved ? 'Unsave article' : 'Save for later'}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill={isSaved ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
+                    <path d="M4 16v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"></path>
+                    <polyline points="12 3 12 15"></polyline>
+                    <polyline points="7 8 12 3 17 8"></polyline>
                   </svg>
                 </button>
               </div>
-            )}
-            
-            {!isSavedView && ((showVoteFeedback && feedbackType === 'upvote') || userVote === 1) ? (
-              <div className="flex items-center justify-center" style={{ width: '120px' }}>
-                <img 
-                  src="/happy-rooster.png" 
-                  alt="Upvoted!" 
-                  className="h-12 object-contain" 
-                />
-              </div>
-            ) : null}
-            
-            {showVoteFeedback && feedbackType === 'downvote' && (
-              <div className="flex items-center justify-center" style={{ width: '120px' }}>
-                <img src="/sad-rooster.png" alt="Downvoted" className="h-12 object-contain" />
-              </div>
-            )}
           </div>
         </div>
       </div>

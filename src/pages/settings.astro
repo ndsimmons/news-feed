@@ -61,6 +61,65 @@ import Layout from '../layouts/Layout.astro';
             Toggle sources on and off to customize your feed. Disabled sources won't appear in your feed.
           </p>
           
+          <button 
+            id="add-source-btn"
+            class="mb-6 px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors"
+          >
+            + Add Source
+          </button>
+
+          <!-- Add Source Modal -->
+          <div id="add-source-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+            <div class="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+              <h3 class="text-lg font-bold text-gray-900 mb-4">Add a News Source</h3>
+              
+              <!-- Step 1: Enter URL -->
+              <div id="add-source-step1">
+                <label for="source-url-input" class="block text-sm font-medium text-gray-700 mb-2">
+                  Website URL
+                </label>
+                <input 
+                  type="url" 
+                  id="source-url-input" 
+                  placeholder="https://example.com"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 mb-4"
+                />
+                <div id="discover-status" class="text-sm text-gray-500 mb-4 hidden"></div>
+                <div class="flex gap-3 justify-end">
+                  <button id="cancel-add-source" class="px-4 py-2 text-gray-600 hover:text-gray-800">Cancel</button>
+                  <button id="discover-source-btn" class="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700">
+                    Find Feed
+                  </button>
+                </div>
+              </div>
+
+              <!-- Step 2: Confirm discovery result -->
+              <div id="add-source-step2" class="hidden">
+                <div id="discovery-result" class="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg">
+                </div>
+                <label for="source-category-select" class="block text-sm font-medium text-gray-700 mb-2">
+                  Category
+                </label>
+                <select id="source-category-select" class="w-full px-3 py-2 border border-gray-300 rounded-lg mb-4">
+                </select>
+                <label for="source-name-input" class="block text-sm font-medium text-gray-700 mb-2">
+                  Source Name
+                </label>
+                <input 
+                  type="text" 
+                  id="source-name-input" 
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 mb-4"
+                />
+                <div class="flex gap-3 justify-end">
+                  <button id="back-add-source" class="px-4 py-2 text-gray-600 hover:text-gray-800">Back</button>
+                  <button id="confirm-add-source" class="px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700">
+                    Add Source
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div id="sources-by-category" class="space-y-6">
             <div class="text-center py-8 text-gray-500">
               Loading sources...
@@ -865,4 +924,164 @@ import Layout from '../layouts/Layout.astro';
   });
 
   loadProfiles();
+
+  // ============================================
+  // Add Source Flow
+  // ============================================
+  const addSourceBtn = document.getElementById('add-source-btn');
+  const addSourceModal = document.getElementById('add-source-modal');
+  const sourceUrlInput = document.getElementById('source-url-input') as HTMLInputElement;
+  const discoverStatus = document.getElementById('discover-status');
+  const discoverBtn = document.getElementById('discover-source-btn');
+  const cancelBtn = document.getElementById('cancel-add-source');
+  const step1 = document.getElementById('add-source-step1');
+  const step2 = document.getElementById('add-source-step2');
+  const discoveryResult = document.getElementById('discovery-result');
+  const sourceNameInput = document.getElementById('source-name-input') as HTMLInputElement;
+  const categorySelect = document.getElementById('source-category-select') as HTMLSelectElement;
+  const backBtn = document.getElementById('back-add-source');
+  const confirmBtn = document.getElementById('confirm-add-source');
+
+  let discoveredSource: any = null;
+
+  // Load categories for the dropdown
+  async function loadCategories() {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/categories`);
+      if (res.ok) {
+        const data = await res.json();
+        const cats = data.categories || [];
+        if (categorySelect) {
+          categorySelect.innerHTML = cats.map((c: any) => 
+            `<option value="${c.id}">${c.name}</option>`
+          ).join('');
+        }
+      }
+    } catch (e) { console.error('Error loading categories:', e); }
+  }
+  loadCategories();
+
+  addSourceBtn?.addEventListener('click', () => {
+    addSourceModal?.classList.remove('hidden');
+    step1?.classList.remove('hidden');
+    step2?.classList.add('hidden');
+    if (sourceUrlInput) sourceUrlInput.value = '';
+    discoverStatus?.classList.add('hidden');
+  });
+
+  cancelBtn?.addEventListener('click', () => {
+    addSourceModal?.classList.add('hidden');
+  });
+
+  addSourceModal?.addEventListener('click', (e) => {
+    if (e.target === addSourceModal) addSourceModal.classList.add('hidden');
+  });
+
+  discoverBtn?.addEventListener('click', async () => {
+    const url = sourceUrlInput?.value?.trim();
+    if (!url) return;
+
+    if (discoverBtn) discoverBtn.textContent = 'Searching...';
+    if (discoverBtn) (discoverBtn as HTMLButtonElement).disabled = true;
+    if (discoverStatus) {
+      discoverStatus.textContent = 'Checking for RSS feeds, sitemaps, and article links...';
+      discoverStatus.className = 'text-sm text-blue-600 mb-4';
+      discoverStatus.classList.remove('hidden');
+    }
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/discover-source`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        discoveredSource = data;
+        
+        // Show step 2
+        step1?.classList.add('hidden');
+        step2?.classList.remove('hidden');
+
+        const methodLabels: Record<string, string> = {
+          'link_tag': 'RSS feed (found in page)',
+          'common_path': 'RSS feed (standard path)',
+          'sitemap': 'Sitemap',
+          'scrape': 'Web scraping'
+        };
+
+        if (discoveryResult) {
+          discoveryResult.innerHTML = `
+            <p class="text-sm font-medium text-green-800">Source found!</p>
+            <p class="text-sm text-green-700 mt-1">Method: ${methodLabels[data.discovery_method] || data.discovery_method}</p>
+            <p class="text-sm text-green-700">Articles found: ${data.articles_found}</p>
+          `;
+        }
+        if (sourceNameInput) sourceNameInput.value = data.name || '';
+      } else {
+        if (discoverStatus) {
+          discoverStatus.textContent = data.error || 'Could not find any feeds or articles at this URL';
+          discoverStatus.className = 'text-sm text-red-600 mb-4';
+        }
+      }
+    } catch (e) {
+      if (discoverStatus) {
+        discoverStatus.textContent = 'Error connecting to server';
+        discoverStatus.className = 'text-sm text-red-600 mb-4';
+      }
+    } finally {
+      if (discoverBtn) discoverBtn.textContent = 'Find Feed';
+      if (discoverBtn) (discoverBtn as HTMLButtonElement).disabled = false;
+    }
+  });
+
+  backBtn?.addEventListener('click', () => {
+    step1?.classList.remove('hidden');
+    step2?.classList.add('hidden');
+  });
+
+  confirmBtn?.addEventListener('click', async () => {
+    if (!discoveredSource) return;
+
+    const token = localStorage.getItem('auth_token');
+    if (!token) {
+      alert('Please log in to add sources');
+      return;
+    }
+
+    const name = sourceNameInput?.value?.trim();
+    if (!name) {
+      alert('Please enter a source name');
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/sources`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          url: discoveredSource.url,
+          category_id: parseInt(categorySelect?.value || '1'),
+          fetch_method: discoveredSource.fetch_method,
+          config: JSON.stringify(discoveredSource.config),
+          active: 1
+        })
+      });
+
+      if (res.ok) {
+        addSourceModal?.classList.add('hidden');
+        // Trigger an initial fetch for this source
+        fetch(`${API_BASE_URL}/api/refresh`, { method: 'POST' }).catch(() => {});
+        // Reload the sources list
+        loadSources();
+        alert(`"${name}" added successfully! Articles will appear in your feed shortly.`);
+      } else {
+        alert('Failed to add source. Please try again.');
+      }
+    } catch (e) {
+      alert('Error adding source. Please try again.');
+    }
+  });
 </script>
