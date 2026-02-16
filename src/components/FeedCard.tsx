@@ -730,7 +730,16 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
               className="cursor-pointer hover:bg-gray-50 -mx-1 px-1 py-1 rounded transition-colors"
               onClick={(e) => {
                 e.stopPropagation();
-                setIsSummaryExpanded(!isSummaryExpanded);
+                const expanding = !isSummaryExpanded;
+                setIsSummaryExpanded(expanding);
+                // Log expansion as a soft positive signal (half a like)
+                if (expanding && isAuthenticated && userId) {
+                  fetch(`${API_BASE_URL}/api/summary-expand`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId, articleId: article.id })
+                  }).catch(() => {});
+                }
               }}
             >
               <p 

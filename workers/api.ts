@@ -211,6 +211,10 @@ export default {
         return await handleTrackImpression(request, env, corsHeaders);
       }
 
+      if (path === '/api/summary-expand' && request.method === 'POST') {
+        return await handleSummaryExpand(request, env, corsHeaders);
+      }
+
       if (path === '/api/sources' && request.method === 'GET') {
         return await handleGetSources(request, env, corsHeaders);
       }
@@ -952,6 +956,71 @@ async function handleVote(
   };
 
   return new Response(JSON.stringify(response), {
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+  });
+}
+
+/**
+ * POST /api/summary-expand - Log summary expansion as a soft positive signal
+ * Adjusts category and source weights at half the rate of a like (+0.05 instead of +0.1)
+ */
+async function handleSummaryExpand(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  const body = await request.json() as { userId: number; articleId: number };
+  if (!body.userId || !body.articleId) {
+    return new Response(JSON.stringify({ error: 'Missing userId or articleId' }), {
+      status: 400,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+
+  // Get article details for category/source
+  const article = await env.DB.prepare(
+    'SELECT id, category_id, source_id FROM articles WHERE id = ?'
+  ).bind(body.articleId).first();
+
+  if (!article) {
+    return new Response(JSON.stringify({ error: 'Article not found' }), {
+      status: 404,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+
+  // Half the weight of a like: +0.05 (additive, matching the vote handler pattern)
+  const adjustment = 0.05;
+
+  // Get current weights
+  const categoryRow = await env.DB.prepare(
+    'SELECT weight FROM interest_weights WHERE user_id = ? AND category_id = ? AND source_id IS NULL'
+  ).bind(body.userId, article.category_id).first() as { weight: number } | null;
+
+  const sourceRow = await env.DB.prepare(
+    'SELECT weight FROM interest_weights WHERE user_id = ? AND category_id IS NULL AND source_id = ?'
+  ).bind(body.userId, article.source_id).first() as { weight: number } | null;
+
+  const newCategoryWeight = Math.min((categoryRow?.weight || 1.0) + adjustment, 2.0);
+  const newSourceWeight = Math.min((sourceRow?.weight || 1.0) + adjustment, 2.0);
+
+  // Update category weight
+  await env.DB.prepare(`
+    INSERT INTO interest_weights (user_id, category_id, source_id, weight, updated_at)
+    VALUES (?, ?, NULL, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id, category_id, source_id)
+    DO UPDATE SET weight = ?, updated_at = CURRENT_TIMESTAMP
+  `).bind(body.userId, article.category_id, newCategoryWeight, newCategoryWeight).run();
+
+  // Update source weight
+  await env.DB.prepare(`
+    INSERT INTO interest_weights (user_id, category_id, source_id, weight, updated_at)
+    VALUES (?, NULL, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id, category_id, source_id)
+    DO UPDATE SET weight = ?, updated_at = CURRENT_TIMESTAMP
+  `).bind(body.userId, article.source_id, newSourceWeight, newSourceWeight).run();
+
+  return new Response(JSON.stringify({ success: true }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   });
 }
