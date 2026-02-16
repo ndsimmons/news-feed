@@ -2910,9 +2910,11 @@ Start immediately with a 1-2 sentence executive summary of the primary event. Wr
 
 Immediately below the lead, provide a simple bulleted list. You must include 2-5 bullets total. Do not use any headers like "Key Data Points" or "Analysis." Each bullet must:
 
-Give extremely supporting evidence for the thesis of the article. (e.g. if the thesis of the article is that tariffs are driving higher prices then look in the article for specific companies and/or industries that are raising prices and why they are raising prices.
+Give supporting evidence for the thesis of the article. (e.g. if the thesis of the article is that tariffs are driving higher prices then look in the article for specific companies and/or industries that are raising prices and why they are raising prices.
 
 Be heavily anchored by a specific hard number, percentage, multiplier (e.g., 3x), or dollar amount from the text.
+
+None of these bullet points should repeat anything in the executive summary. Each one should be new, interesting information.
 
 Constraint - Length & Tone:
 
