@@ -562,17 +562,36 @@ import Layout from '../layouts/Layout.astro';
         return acc;
       }, {});
 
+      // Build category options for the dropdown
+      const allCategories = [
+        { id: 1, name: 'Tech/AI' },
+        { id: 2, name: 'Business/Finance' },
+        { id: 3, name: 'Sports' },
+        { id: 4, name: 'Politics' },
+        { id: 5, name: 'Arts/Culture' },
+        { id: 6, name: 'Podcasts' }
+      ];
+
       container.innerHTML = Object.keys(grouped).sort().map(category => `
         <div class="bg-white border border-gray-200 rounded-lg p-6">
           <h3 class="text-lg font-bold text-gray-900 mb-4">${category}</h3>
           <div class="space-y-3">
             ${grouped[category].map((source: any) => `
               <div class="flex items-center justify-between p-3 border border-gray-200 rounded-lg">
-                <div class="flex-1">
+                <div class="flex-1 min-w-0">
                   <h4 class="font-medium text-gray-900">${source.name}</h4>
-                  <p class="text-xs text-gray-500 mt-1">${source.url || ''}</p>
+                  <div class="flex items-center gap-2 mt-1">
+                    <select 
+                      data-source-id="${source.id}" 
+                      class="category-select text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded px-2 py-1 cursor-pointer hover:border-gray-400 transition-colors"
+                    >
+                      ${allCategories.map((cat: any) => `
+                        <option value="${cat.id}" ${cat.name === (source.category_name || category) ? 'selected' : ''}>${cat.name}</option>
+                      `).join('')}
+                    </select>
+                  </div>
                 </div>
-                <label class="relative inline-flex items-center cursor-pointer">
+                <label class="relative inline-flex items-center cursor-pointer ml-3">
                   <input 
                     type="checkbox" 
                     ${source.user_active === 1 || source.user_active === undefined ? 'checked' : ''}
@@ -591,6 +610,12 @@ import Layout from '../layouts/Layout.astro';
       const toggles = document.querySelectorAll('.source-toggle');
       toggles.forEach(toggle => {
         toggle.addEventListener('change', handleSourceToggle);
+      });
+
+      // Add event listeners to category dropdowns
+      const categorySelects = document.querySelectorAll('.category-select');
+      categorySelects.forEach(select => {
+        select.addEventListener('change', handleCategoryChange);
       });
     } catch (error) {
       console.error('Error loading sources:', error);
@@ -638,6 +663,35 @@ import Layout from '../layouts/Layout.astro';
       console.error('Error saving source preference:', error);
       alert('Error saving preference. Please try again.');
       checkbox.checked = !isActive; // Revert on error
+    }
+  }
+
+  // Handle category change for a source
+  async function handleCategoryChange(e: Event) {
+    const select = e.target as HTMLSelectElement;
+    const sourceId = parseInt(select.getAttribute('data-source-id') || '0');
+    const categoryId = parseInt(select.value);
+    
+    if (!sourceId || !categoryId) return;
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/source-category`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceId, categoryId })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to update category');
+      }
+
+      // Reload sources to re-group by category
+      loadSources();
+    } catch (error) {
+      console.error('Error updating source category:', error);
+      alert('Error updating category. Please try again.');
+      // Revert would be complex, just reload
+      loadSources();
     }
   }
 

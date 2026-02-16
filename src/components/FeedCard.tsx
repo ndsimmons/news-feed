@@ -2,6 +2,48 @@ import { useState, useEffect, useRef } from 'react';
 import type { Article } from '../lib/types';
 import { API_BASE_URL } from '../lib/config';
 
+// Extract a clean display name from a URL domain (e.g. "www.wsj.com" -> "WSJ")
+function getDisplayDomain(url: string): string | null {
+  try {
+    const hostname = new URL(url).hostname.replace(/^www\./, '');
+    // Map common domains to proper names
+    const domainNames: Record<string, string> = {
+      'nytimes.com': 'NY Times',
+      'wsj.com': 'WSJ',
+      'washingtonpost.com': 'Washington Post',
+      'theinformation.com': 'The Information',
+      'axios.com': 'Axios',
+      'techcrunch.com': 'TechCrunch',
+      'theverge.com': 'The Verge',
+      'arstechnica.com': 'Ars Technica',
+      'bloomberg.com': 'Bloomberg',
+      'reuters.com': 'Reuters',
+      'cnbc.com': 'CNBC',
+      'bbc.com': 'BBC',
+      'bbc.co.uk': 'BBC',
+      'ft.com': 'Financial Times',
+      'economist.com': 'The Economist',
+      'variety.com': 'Variety',
+      'wired.com': 'Wired',
+      'apnews.com': 'AP News',
+      'politico.com': 'Politico',
+      'thehill.com': 'The Hill',
+      'cnn.com': 'CNN',
+      'foxnews.com': 'Fox News',
+      'nbcnews.com': 'NBC News',
+      'abcnews.go.com': 'ABC News',
+      'theguardian.com': 'The Guardian',
+      'forbes.com': 'Forbes',
+    };
+    if (domainNames[hostname]) return domainNames[hostname];
+    // Fallback: capitalize first segment (e.g. "axios.com" -> "Axios")
+    const name = hostname.split('.')[0];
+    return name.charAt(0).toUpperCase() + name.slice(1);
+  } catch {
+    return null;
+  }
+}
+
 // Decode HTML entities in text
 function decodeHtmlEntities(text: string): string {
    const entities: Record<string, string> = {
@@ -200,14 +242,9 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
     }
   };
 
-  const handleArticleClick = (e: React.MouseEvent) => {
-    if (isDragging) {
-      e.preventDefault();
-      return;
-    }
-    
-    // If this article is from an aggregator source, auto-add the original
-    // publication as a source for this user (fire-and-forget)
+  // Auto-add the underlying source for aggregator articles (fire-and-forget)
+  // Called on click, upvote, and save — any positive interaction
+  const autoAddAggregatorSource = () => {
     if (article.click_treatment === 'aggregator' && isAuthenticated && userId) {
       fetch(`${API_BASE_URL}/api/auto-add-source`, {
         method: 'POST',
@@ -215,6 +252,14 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
         body: JSON.stringify({ userId, articleUrl: article.url })
       }).catch(() => {});
     }
+  };
+
+  const handleArticleClick = (e: React.MouseEvent) => {
+    if (isDragging) {
+      e.preventDefault();
+      return;
+    }
+    autoAddAggregatorSource();
   };
 
   const handleVote = async (vote: number) => {
@@ -266,6 +311,11 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
       // Notify DiscoveryModeBadge about vote (only for new votes, not unvotes)
       if (vote !== 0 && userVote === 0) {
         window.dispatchEvent(new CustomEvent('vote-cast'));
+      }
+      
+      // Auto-add aggregator source on upvote
+      if (vote === 1) {
+        autoAddAggregatorSource();
       }
       
       // Recalculate score after vote
@@ -346,6 +396,9 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
         
         if (!response.ok) throw new Error('Failed to save');
         setIsSaved(true);
+        
+        // Auto-add aggregator source when user saves
+        autoAddAggregatorSource();
         
         // Saves count as likes for the algorithm (inserted into votes table)
         // so notify the vote counter to keep it in sync
@@ -654,9 +707,17 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
             </a>
           </h3>
           
-          <div className="flex items-center gap-2 mb-2">
+           <div className="flex items-center gap-2 mb-2">
             <span className="article-source">
-              {article.source_name || 'Unknown Source'}
+              {article.click_treatment === 'aggregator' && article.url
+                ? <>
+                    {getDisplayDomain(article.url) || 'Unknown Source'}
+                    <span className="text-xs text-gray-400 font-normal ml-1">
+                      (via {article.source_name})
+                    </span>
+                  </>
+                : (article.source_name || 'Unknown Source')
+              }
             </span>
             <span className="text-gray-400">•</span>
             <span className="text-xs text-gray-500">

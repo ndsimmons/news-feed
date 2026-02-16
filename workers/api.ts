@@ -218,6 +218,10 @@ export default {
         return await handleSaveUserSources(request, env, corsHeaders);
       }
 
+      if (path === '/api/source-category' && request.method === 'POST') {
+        return await handleUpdateSourceCategory(request, env, corsHeaders);
+      }
+
       if (path === '/api/user/stats' && request.method === 'GET') {
         return await handleGetUserStats(request, env, corsHeaders);
       }
@@ -2349,6 +2353,65 @@ async function handleSaveUserSources(
   } catch (error) {
     console.error('Error saving user sources:', error);
     return new Response(JSON.stringify({ error: 'Failed to save user sources' }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+/**
+ * POST /api/source-category - Move a source to a different category
+ * Body: { sourceId: number, categoryId: number }
+ */
+async function handleUpdateSourceCategory(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  try {
+    const { sourceId, categoryId } = await request.json() as { sourceId: number; categoryId: number };
+
+    if (!sourceId || !categoryId) {
+      return new Response(JSON.stringify({ error: 'sourceId and categoryId required' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Verify category exists
+    const category = await env.DB.prepare(
+      'SELECT id, name FROM categories WHERE id = ?'
+    ).bind(categoryId).first();
+
+    if (!category) {
+      return new Response(JSON.stringify({ error: 'Category not found' }), {
+        status: 404,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Update the source's category
+    await env.DB.prepare(
+      'UPDATE sources SET category_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+    ).bind(categoryId, sourceId).run();
+
+    // Also update all existing articles from this source to the new category
+    // so they appear in the right category feed immediately
+    await env.DB.prepare(
+      'UPDATE articles SET category_id = ? WHERE source_id = ?'
+    ).bind(categoryId, sourceId).run();
+
+    return new Response(JSON.stringify({ 
+      success: true, 
+      sourceId,
+      categoryId,
+      categoryName: (category as any).name
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  } catch (error) {
+    console.error('Error updating source category:', error);
+    return new Response(JSON.stringify({ error: 'Failed to update source category' }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
