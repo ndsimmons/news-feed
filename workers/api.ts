@@ -2856,9 +2856,9 @@ async function backfillInBatches(
   items: Array<{ article_id: number; user_id: number }>,
   env: Env
 ): Promise<void> {
-  // Gemini free tier: 30 requests/minute = 1 request every 2 seconds
-  // Process sequentially with 2.5 second delays to stay under rate limit
-  const DELAY_MS = 2500;
+  // Gemini 2.0 Flash free tier: 15 requests/minute, 1500 requests/day
+  // Process sequentially with 5 second delays to stay well under rate limit
+  const DELAY_MS = 5000;
   
   console.log(`Backfill started: processing ${items.length} articles sequentially (2.5s delay between each)`);
   
@@ -2922,35 +2922,56 @@ No "AI-isms" (e.g., "The article highlights," "In conclusion"). Start immediatel
 
   const userPrompt = `Title: ${article.title}\n\nText: ${inputText.substring(0, 2000)}`;
 
-  try {
-    const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${env.GOOGLE_AI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: systemPrompt }] },
-          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-          generationConfig: {
-            maxOutputTokens: 500,
-            temperature: 0.7,
-            thinkingConfig: { thinkingBudget: 0 }
-          }
-        })
+  const MAX_RETRIES = 3;
+  
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const geminiResponse = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${env.GOOGLE_AI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+            generationConfig: {
+              maxOutputTokens: 500,
+              temperature: 0.7
+            }
+          })
+        }
+      );
+
+      if (geminiResponse.status === 429) {
+        // Rate limited — wait and retry
+        const retryDelay = attempt * 10000; // 10s, 20s, 30s
+        console.log(`Article ${articleId}: Rate limited (attempt ${attempt}/${MAX_RETRIES}), retrying in ${retryDelay / 1000}s...`);
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        continue;
       }
-    );
 
-    if (!geminiResponse.ok) {
-      const errorText = await geminiResponse.text();
-      throw new Error(`Gemini API error ${geminiResponse.status}: ${errorText}`);
+      if (!geminiResponse.ok) {
+        const errorText = await geminiResponse.text();
+        throw new Error(`Gemini API error ${geminiResponse.status}: ${errorText}`);
+      }
+
+      const geminiData = await geminiResponse.json() as any;
+      const text = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      
+      if (!text) {
+        console.error(`Article ${articleId}: Gemini returned empty text. Response:`, JSON.stringify(geminiData).substring(0, 500));
+        aiSummary = article.title;
+      } else {
+        aiSummary = text;
+        console.log(`Article ${articleId}: Gemini generated summary (${aiSummary.split(/\s+/).length} words)`);
+      }
+      break; // Success — exit retry loop
+    } catch (err) {
+      console.error(`Article ${articleId}: Gemini summary failed (attempt ${attempt}/${MAX_RETRIES})`, err);
+      if (attempt === MAX_RETRIES) {
+        aiSummary = article.title;
+      }
     }
-
-    const geminiData = await geminiResponse.json() as any;
-    aiSummary = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || article.title;
-    console.log(`Article ${articleId}: Gemini generated summary (${aiSummary.split(/\s+/).length} words)`);
-  } catch (err) {
-    console.error(`Article ${articleId}: Gemini summary failed, falling back to title`, err);
-    aiSummary = article.title;
   }
 
   // Store the summary
