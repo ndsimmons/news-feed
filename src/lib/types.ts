@@ -53,8 +53,9 @@ export interface Article {
   category_name?: string;
   category_slug?: string;
   spotify_url?: string; // Spotify link for podcasts
-  use_archive?: number; // 1 = redirect through archive.is
-  is_aggregator?: number; // 1 = source is an aggregator, article URL is from original publication
+  use_archive?: number; // DEPRECATED: use click_treatment
+  is_aggregator?: number; // DEPRECATED: use click_treatment
+  click_treatment?: string; // 'direct' | 'archive' | 'aggregator' | 'spotify'
   score?: number;
   adjustedScore?: number; // Normalized score (bell curve, mean=100)
   userVote?: number; // -1, 0, 1

@@ -157,9 +157,9 @@ async function fetchFromSource(source: Source, env: Env): Promise<number> {
     }
     
     // Fetch full article text for newly inserted articles that don't have content yet
-    // Skip podcast sources (spotify_url) — no article text to extract
-    const sourceFlags = source as any;
-    if (sourceFlags.spotify_url) {
+    // Use click_treatment to determine how to fetch: 'archive' = via archive.is, 'spotify' = skip
+    const clickTreatment = (source as any).click_treatment || 'direct';
+    if (clickTreatment === 'spotify') {
       console.log(`Skipping content fetch for podcast source: ${source.name}`);
     } else {
       const needsContent = newArticles.filter(({ article }) => {
@@ -168,11 +168,7 @@ async function fetchFromSource(source: Source, env: Env): Promise<number> {
       });
       
       if (needsContent.length > 0) {
-        // For paywalled sources (use_archive=1, e.g. NYT/WSJ), fetch via archive.is
-        // This mirrors the click-through logic in FeedCard.tsx
-        const useArchive = !!(sourceFlags.use_archive);
-        
-        console.log(`Fetching full text for ${needsContent.length} new articles from ${source.name}${useArchive ? ' (via archive.is)' : ''}`);
+        console.log(`Fetching full text for ${needsContent.length} new articles from ${source.name} (treatment: ${clickTreatment})`);
         
         // Fetch in parallel batches of 5
         const BATCH_SIZE = 5;
@@ -180,7 +176,7 @@ async function fetchFromSource(source: Source, env: Env): Promise<number> {
           const batch = needsContent.slice(i, i + BATCH_SIZE);
           const results = await Promise.allSettled(
             batch.map(({ article }) => {
-              const fetchUrl = useArchive
+              const fetchUrl = clickTreatment === 'archive'
                 ? `https://archive.is/newest/${article.url!.split('?')[0]}`
                 : article.url!;
               return extractArticleText(fetchUrl);

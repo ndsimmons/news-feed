@@ -208,7 +208,7 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
     
     // If this article is from an aggregator source, auto-add the original
     // publication as a source for this user (fire-and-forget)
-    if (article.is_aggregator && isAuthenticated && userId) {
+    if (article.click_treatment === 'aggregator' && isAuthenticated && userId) {
       fetch(`${API_BASE_URL}/api/auto-add-source`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -639,7 +639,13 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
         <div className="flex-1 min-w-0 relative z-10">
           <h3 className="article-title">
             <a 
-              href={article.spotify_url || (article.use_archive ? `https://archive.is/newest/${article.url.split('?')[0]}` : article.url)} 
+              href={
+                article.click_treatment === 'spotify' && article.spotify_url
+                  ? article.spotify_url
+                  : article.click_treatment === 'archive'
+                    ? `https://archive.is/newest/${article.url.split('?')[0]}`
+                    : article.url
+              } 
               target="_blank" 
               rel="noopener noreferrer"
               onClick={handleArticleClick}

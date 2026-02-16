@@ -438,7 +438,7 @@ async function handleGetFeed(
   //   2. Page 1 only: also suppress articles viewed in the last 30 minutes
   //      (so returning to the feed shows fresh content, not stuff you just scrolled past)
   let query = `
-    SELECT a.*, s.name as source_name, s.spotify_url as spotify_url, s.use_archive as use_archive, s.is_aggregator as is_aggregator, c.name as category_name, c.slug as category_slug
+    SELECT a.*, s.name as source_name, s.spotify_url as spotify_url, s.use_archive as use_archive, s.is_aggregator as is_aggregator, s.click_treatment as click_treatment, c.name as category_name, c.slug as category_slug
     FROM articles a
     LEFT JOIN sources s ON a.source_id = s.id
     LEFT JOIN categories c ON a.category_id = c.id
@@ -2727,6 +2727,7 @@ async function handleGetSavedArticles(
         s.use_archive as use_archive,
         s.is_aggregator as is_aggregator,
         s.spotify_url as spotify_url,
+        s.click_treatment as click_treatment,
         c.name as category_name,
         c.slug as category_slug,
         sa.saved_at,
@@ -2858,20 +2859,20 @@ async function handleBackfillContent(
   ctx: ExecutionContext
 ): Promise<Response> {
   try {
-    // Get articles from last 7 days that have no content, joined with source flags
+    // Get articles from last 7 days that have no content, joined with source click_treatment
     // so we can use archive.is for paywalled sources and skip podcasts
     const result = await env.DB.prepare(`
-      SELECT a.id, a.url, s.use_archive, s.spotify_url
+      SELECT a.id, a.url, COALESCE(s.click_treatment, 'direct') as click_treatment
       FROM articles a
       LEFT JOIN sources s ON a.source_id = s.id
       WHERE (a.content IS NULL OR a.content = '') 
       AND a.published_at > datetime('now', '-7 days')
-      AND (s.spotify_url IS NULL OR s.spotify_url = '')
+      AND COALESCE(s.click_treatment, 'direct') != 'spotify'
       ORDER BY a.published_at DESC
       LIMIT 200
     `).all();
 
-    const items = result.results as Array<{ id: number; url: string; use_archive: number | null; spotify_url: string | null }>;
+    const items = result.results as Array<{ id: number; url: string; click_treatment: string }>;
     console.log(`Content backfill: ${items.length} articles need content`);
 
     const response = new Response(JSON.stringify({ 
@@ -2898,10 +2899,10 @@ async function handleBackfillContent(
 /**
  * Fetch article text in parallel batches. Updates articles.content and clears ai_summary
  * so it regenerates from full text on next feed load.
- * Uses archive.is for paywalled sources (use_archive=1) — mirrors FeedCard click-through logic.
+ * Uses click_treatment to determine fetch strategy — mirrors FeedCard click-through logic.
  */
 async function backfillContentInBatches(
-  items: Array<{ id: number; url: string; use_archive: number | null }>,
+  items: Array<{ id: number; url: string; click_treatment: string }>,
   env: Env
 ): Promise<void> {
   const BATCH_SIZE = 5;
@@ -2915,9 +2916,10 @@ async function backfillContentInBatches(
 
     const results = await Promise.allSettled(
       batch.map(item => {
-        // For paywalled sources (NYT, WSJ), fetch via archive.is
-        // Same logic as FeedCard.tsx: archive.is/newest/{url_without_querystring}
-        const fetchUrl = item.use_archive
+        // Use click_treatment to determine how to fetch
+        // 'archive' = via archive.is (paywalled: NYT, WSJ)
+        // 'direct'/'aggregator' = fetch URL directly
+        const fetchUrl = item.click_treatment === 'archive'
           ? `https://archive.is/newest/${item.url.split('?')[0]}`
           : item.url;
         return fetchArticleText(fetchUrl);

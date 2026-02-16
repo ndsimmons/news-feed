@@ -27,8 +27,9 @@ CREATE TABLE IF NOT EXISTS sources (
   fetch_method TEXT NOT NULL, -- 'rss', 'api', 'scrape', 'manual'
   config TEXT, -- JSON config: API keys, RSS URLs, selectors, etc.
   active BOOLEAN DEFAULT 1,
-  use_archive BOOLEAN DEFAULT 0, -- redirect article links through archive.is
-  is_aggregator BOOLEAN DEFAULT 0, -- source links to articles from other publications
+  use_archive BOOLEAN DEFAULT 0, -- DEPRECATED: use click_treatment instead
+  is_aggregator BOOLEAN DEFAULT 0, -- DEPRECATED: use click_treatment instead
+  click_treatment TEXT DEFAULT 'direct', -- 'direct', 'archive', 'aggregator', 'spotify'
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (category_id) REFERENCES categories(id)
