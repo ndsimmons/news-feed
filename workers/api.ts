@@ -2904,14 +2904,13 @@ async function generateArticleSummary(articleId: number, userId: number, env: En
 
 Strict Grounding Rule: Use ONLY the facts, names, and titles provided in the text below. Do not use your internal knowledge to correct or supplement names (e.g., if the text says "Kennedy," do not use "Xavier Becerra"). If a specific name or data point is in the text, that is your only truth.
 
-Task:
-Analyze the provided news article and provide a high-impact summary following this exact structure:
+Task: Analyze the provided news article and provide a high-impact summary following this exact structure:
 
-The Lead: Start with a 1-2 sentence executive summary of the primary event. This entire section must be in bold.
+Start with a 1-2 sentence executive summary of the primary event. This entire section must be in bold.
 
-The Strategic Analysis: On a new line (not bolded), identify 2-3 non-obvious details or "Easter eggs" that reveal the underlying business strategy or hidden market shifts. Focus on the incentives or the mechanics behind the headline.
+On a new line (not bolded), identify 2-3 non-obvious details or "Easter eggs" that reveal the underlying thesis of the article. Focus on the impact of the thesis of the article
 
-Key Data Points: On a new line, write "Key Data Points" and follow it with a bulleted list. Each bullet must contain a specific number, percentage, or dollar amount.
+Key Data Points: On a new line, write "Key Data Points" and follow it with a bulleted list. Each bullet must contain a specific number, percentage, or dollar amount. If none exist then leave this out.
 
 Constraint - Length & Tone:
 
