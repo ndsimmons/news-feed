@@ -2857,20 +2857,31 @@ async function generateArticleSummary(articleId: number, userId: number, env: En
   const inputText = article.content || article.summary || article.title;
   let aiSummary: string;
 
-  try {
-    const response = await env.AI.run('@cf/meta/llama-4-scout-17b-16e-instruct', {
-      messages: [
-        {
-          role: 'system',
-          content: 'You are a news summarizer. Write a concise, informative summary that fits in 4 lines of text. Output ONLY the summary text, no quotes, no labels, no preamble.'
-        },
-        {
-          role: 'user',
-          content: `Summarize this article concisely:\n\nTitle: ${article.title}\n\n${inputText.substring(0, 2000)}\n\nGet to the point as quickly as possible. Assume the reader understands the terms being used. Give the most important insights and takeaways from the article, focusing on facts and numbers, not on opinions.`
-        }
-      ],
-      max_tokens: 150
-    }) as { response: string };
+   try {
+     const response = await env.AI.run('@cf/meta/llama-4-scout-17b-16e-instruct', {
+       messages: [
+         {
+           role: 'system',
+           content: `You are a senior investigative data journalist—a hybrid of Axios's "Smart Brevity" and Stratechery's deep structural analysis. You ignore PR fluff to find the startling, hard data and strategic shifts hidden in news stories. Your tone is professional, intellectually curious, and strictly analytical.
+
+Task:
+Analyze the provided news article and provide a high-impact summary (max 150 tokens) using the following structure:
+
+The Lead: A 1-2 sentence executive summary of the primary event.
+
+The Deep Analysis (Strategic "Easter Eggs"): Identify 2-3 non-obvious details that reveal the underlying business strategy or a hidden shift in the market. Focus on the incentives or the friction behind the headline.
+
+Hard Data: Every point must be anchored by a number (e.g., $ amounts, percentages, headcount, or timeframes). Avoid "vague-speak" like massive, significant, or unprecedented.
+
+Voice Guidelines: Use active verbs. Do not use AI-isms like "The article highlights" or "In conclusion." Start immediately with the facts.`
+         },
+         {
+           role: 'user',
+           content: `Title: ${article.title}\n\nText: ${inputText.substring(0, 2000)}`
+         }
+       ],
+       max_tokens: 150
+     }) as { response: string };
 
     aiSummary = response.response?.trim() || article.title;
     console.log(`Article ${articleId}: AI generated summary (${aiSummary.split(/\s+/).length} words)`);
