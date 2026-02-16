@@ -242,6 +242,10 @@ export default {
         return await handleBackfillSummaries(request, env, corsHeaders, ctx);
       }
 
+      if (path === '/api/backfill-content' && request.method === 'POST') {
+        return await handleBackfillContent(request, env, corsHeaders, ctx);
+      }
+
       // TEST ENDPOINT - Auto login as test user 999 (ONLY for development/testing)
       if (path === '/api/test-login' && request.method === 'POST') {
         return await handleTestLogin(request, env, corsHeaders);
@@ -2839,6 +2843,164 @@ async function handleSaveArticle(
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
+  }
+}
+
+/**
+ * POST /api/backfill-content - Fetch full article text for articles missing content.
+ * Processes in background batches via waitUntil. Each batch fetches 5 articles in parallel.
+ * Also clears ai_summary for articles that get new content so summaries regenerate from full text.
+ */
+async function handleBackfillContent(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>,
+  ctx: ExecutionContext
+): Promise<Response> {
+  try {
+    // Get articles from last 7 days that have no content
+    const result = await env.DB.prepare(`
+      SELECT id, url FROM articles 
+      WHERE (content IS NULL OR content = '') 
+      AND published_at > datetime('now', '-7 days')
+      ORDER BY published_at DESC
+      LIMIT 200
+    `).all();
+
+    const items = result.results as Array<{ id: number; url: string }>;
+    console.log(`Content backfill: ${items.length} articles need content`);
+
+    const response = new Response(JSON.stringify({ 
+      success: true, 
+      total: items.length, 
+      message: 'Content backfill started. Processing in background.' 
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+
+    if (items.length > 0 && ctx?.waitUntil) {
+      ctx.waitUntil(backfillContentInBatches(items, env));
+    }
+
+    return response;
+  } catch (error) {
+    console.error('Error starting content backfill:', error);
+    return new Response(JSON.stringify({ error: 'Content backfill failed' }), {
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+/**
+ * Fetch article text in parallel batches. Updates articles.content and clears ai_summary
+ * so it regenerates from full text on next feed load.
+ */
+async function backfillContentInBatches(
+  items: Array<{ id: number; url: string }>,
+  env: Env
+): Promise<void> {
+  const BATCH_SIZE = 5;
+  const DELAY_MS = 1000;
+  let fetched = 0;
+
+  console.log(`Content backfill: processing ${items.length} articles in batches of ${BATCH_SIZE}`);
+
+  for (let i = 0; i < items.length; i += BATCH_SIZE) {
+    const batch = items.slice(i, i + BATCH_SIZE);
+
+    const results = await Promise.allSettled(
+      batch.map(item => fetchArticleText(item.url))
+    );
+
+    for (let j = 0; j < results.length; j++) {
+      const result = results[j];
+      if (result.status === 'fulfilled' && result.value && result.value.length > 100) {
+        try {
+          // Store content and clear stale ai_summary so it regenerates from full text
+          await env.DB.prepare(
+            'UPDATE articles SET content = ?, ai_summary = NULL WHERE id = ?'
+          ).bind(result.value, batch[j].id).run();
+          fetched++;
+        } catch (err) {
+          console.error(`Failed to update content for article ${batch[j].id}:`, err);
+        }
+      }
+    }
+
+    if (i + BATCH_SIZE < items.length) {
+      await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+    }
+  }
+
+  console.log(`Content backfill complete: fetched ${fetched}/${items.length} articles`);
+}
+
+/**
+ * Fetch article page and extract main body text.
+ * Returns plain text truncated to ~5000 chars.
+ */
+async function fetchArticleText(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'NewsFeedAggregator/1.0' },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!res.ok) return null;
+
+    const html = await res.text();
+
+    // Strategy 1: Extract from <article> tag
+    let bodyHtml = '';
+    const articleMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
+    if (articleMatch) {
+      bodyHtml = articleMatch[1];
+    }
+
+    // Strategy 2: Common content div patterns
+    if (!bodyHtml) {
+      const contentPatterns = [
+        /class=["'][^"']*(?:article-body|article-content|post-content|entry-content|story-body|story-content)[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|section)>/i,
+        /id=["'](?:article-body|content|main-content|story)["'][^>]*>([\s\S]*?)<\/(?:div|section)>/i,
+      ];
+      for (const pattern of contentPatterns) {
+        const match = html.match(pattern);
+        if (match) {
+          bodyHtml = match[1];
+          break;
+        }
+      }
+    }
+
+    // Strategy 3: All <p> tags from body
+    if (!bodyHtml) {
+      const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+      bodyHtml = bodyMatch ? bodyMatch[1] : html;
+    }
+
+    // Extract text from <p> tags
+    const paragraphs: string[] = [];
+    const pMatches = bodyHtml.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi);
+    for (const m of pMatches) {
+      const text = m[1]
+        .replace(/<[^>]*>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (text.length > 40 && text.length < 2000) {
+        paragraphs.push(text);
+      }
+    }
+
+    if (paragraphs.length === 0) return null;
+    return paragraphs.join('\n\n').substring(0, 5000) || null;
+  } catch {
+    return null;
   }
 }
 

@@ -92,14 +92,16 @@ async function fetchFromSource(source: Source, env: Env): Promise<number> {
         return 0;
     }
 
-    // Insert articles into database
+    // Insert articles into database (without content first — content is fetched only for new articles)
     let inserted = 0;
+    const newArticles: Array<{ articleId: number; article: Partial<Article> }> = [];
+    
     for (const article of articles) {
       try {
         const result = await env.DB.prepare(`
           INSERT OR IGNORE INTO articles 
-          (title, summary, url, source_id, category_id, published_at, image_url, author)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          (title, summary, url, source_id, category_id, published_at, image_url, author, content)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           article.title,
           article.summary || null,
@@ -108,15 +110,17 @@ async function fetchFromSource(source: Source, env: Env): Promise<number> {
           source.category_id,
           article.published_at || new Date().toISOString(),
           article.image_url || null,
-          article.author || null
+          article.author || null,
+          article.content || null  // May already have content from RSS content:encoded
         ).run();
         
         // Only count if actually inserted (not duplicate)
         if (result.meta.changes > 0) {
           inserted++;
           const articleId = result.meta.last_row_id;
+          newArticles.push({ articleId: articleId as number, article });
           
-          // NEW: Generate embedding for new article (async, don't block)
+          // Generate embedding for new article
           try {
             const fullArticle = {
               id: articleId,
@@ -149,6 +153,39 @@ async function fetchFromSource(source: Source, env: Env): Promise<number> {
       } catch (error) {
         // Probably duplicate URL, skip
         console.log(`Skipping duplicate article: ${article.url}`);
+      }
+    }
+    
+    // Fetch full article text for newly inserted articles that don't have content yet
+    const needsContent = newArticles.filter(({ article }) => {
+      const contentLen = article.content?.length || 0;
+      return contentLen < 200 && article.url;
+    });
+    
+    if (needsContent.length > 0) {
+      console.log(`Fetching full text for ${needsContent.length} new articles from ${source.name}`);
+      
+      // Fetch in parallel batches of 5
+      const BATCH_SIZE = 5;
+      for (let i = 0; i < needsContent.length; i += BATCH_SIZE) {
+        const batch = needsContent.slice(i, i + BATCH_SIZE);
+        const results = await Promise.allSettled(
+          batch.map(({ article }) => extractArticleText(article.url!))
+        );
+        
+        // Update articles that got content
+        for (let j = 0; j < results.length; j++) {
+          const result = results[j];
+          if (result.status === 'fulfilled' && result.value) {
+            try {
+              await env.DB.prepare(
+                'UPDATE articles SET content = ? WHERE id = ?'
+              ).bind(result.value, batch[j].articleId).run();
+            } catch (err) {
+              console.error(`Failed to update content for article ${batch[j].articleId}:`, err);
+            }
+          }
+        }
       }
     }
 
@@ -196,7 +233,7 @@ async function fetchFromRSS(source: Source): Promise<Partial<Article>[]> {
     published_at: item.pubDate ? parseRSSDate(item.pubDate)?.toISOString() : null,
     image_url: item.imageUrl || null,
     author: item.author || null,
-    content: item.content || null
+    content: item.content || null  // From content:encoded if available; full text fetched post-INSERT for new articles only
   }));
 }
 
@@ -326,6 +363,24 @@ async function fetchFromScrape(source: Source): Promise<Partial<Article>[]> {
       const author = extractMeta(html, 'author') || extractMeta(html, 'article:author');
       const publishedTime = extractMeta(html, 'article:published_time') || extractMeta(html, 'date') || extractMeta(html, 'pubdate');
 
+      // Extract article body text from the page we already fetched
+      // Reuse the HTML we have instead of fetching again
+      let bodyText: string | null = null;
+      const paragraphs: string[] = [];
+      // Try <article> tag first
+      const articleTagMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
+      const bodyHtml = articleTagMatch ? articleTagMatch[1] : html;
+      const pMatches = bodyHtml.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi);
+      for (const m of pMatches) {
+        const pText = stripHtmlTags(m[1]).trim();
+        if (pText.length > 40 && pText.length < 2000) {
+          paragraphs.push(pText);
+        }
+      }
+      if (paragraphs.length > 0) {
+        bodyText = paragraphs.join('\n\n').substring(0, 5000);
+      }
+
       if (title) {
         articles.push({
           title: title.trim(),
@@ -333,7 +388,8 @@ async function fetchFromScrape(source: Source): Promise<Partial<Article>[]> {
           url: articleUrl,
           published_at: publishedTime || new Date().toISOString(),
           image_url: image || null,
-          author: author || null
+          author: author || null,
+          content: bodyText
         });
       }
     } catch (e) {
@@ -364,6 +420,90 @@ function extractMeta(html: string, key: string): string | null {
 function extractHtmlTag(html: string, tag: string): string | null {
   const match = html.match(new RegExp(`<${tag}[^>]*>([^<]+)</${tag}>`, 'i'));
   return match ? match[1].trim() : null;
+}
+
+/**
+ * Fetch the article page and extract the main body text.
+ * Uses <article> tag, common content selectors, or falls back to <p> tag extraction.
+ * Returns plain text (HTML stripped), truncated to ~5000 chars to keep DB lean.
+ */
+async function extractArticleText(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'NewsFeedAggregator/1.0' },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(8000) // 8s timeout per article
+    });
+    if (!res.ok) return null;
+
+    const html = await res.text();
+
+    // Strategy 1: Extract text from <article> tag (most news sites use this)
+    let bodyHtml = '';
+    const articleMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
+    if (articleMatch) {
+      bodyHtml = articleMatch[1];
+    }
+
+    // Strategy 2: Try common content div patterns
+    if (!bodyHtml) {
+      const contentPatterns = [
+        /class=["'][^"']*(?:article-body|article-content|post-content|entry-content|story-body|story-content)[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|section)>/i,
+        /id=["'](?:article-body|content|main-content|story)["'][^>]*>([\s\S]*?)<\/(?:div|section)>/i,
+      ];
+      for (const pattern of contentPatterns) {
+        const match = html.match(pattern);
+        if (match) {
+          bodyHtml = match[1];
+          break;
+        }
+      }
+    }
+
+    // Strategy 3: Collect all <p> tags from the page body as fallback
+    if (!bodyHtml) {
+      // Try to get just the <body> first
+      const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+      bodyHtml = bodyMatch ? bodyMatch[1] : html;
+    }
+
+    // Extract text from <p> tags within the selected HTML
+    const paragraphs: string[] = [];
+    const pMatches = bodyHtml.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi);
+    for (const m of pMatches) {
+      const text = stripHtmlTags(m[1]).trim();
+      // Skip very short paragraphs (likely navigation/captions) and very long ones (likely embedded data)
+      if (text.length > 40 && text.length < 2000) {
+        paragraphs.push(text);
+      }
+    }
+
+    if (paragraphs.length === 0) return null;
+
+    // Join and truncate to ~5000 chars
+    const fullText = paragraphs.join('\n\n');
+    return fullText.substring(0, 5000) || null;
+  } catch (err) {
+    // Timeout, network error, etc. — don't fail the whole fetch
+    return null;
+  }
+}
+
+/**
+ * Strip HTML tags from a string, preserving text content
+ */
+function stripHtmlTags(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**

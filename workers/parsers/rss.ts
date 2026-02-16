@@ -85,7 +85,8 @@ function parseRSSItem(itemXml: string): RSSItem {
   item.description = extractTag(itemXml, 'description') || extractTag(itemXml, 'summary') || '';
   item.pubDate = extractTag(itemXml, 'pubDate') || extractTag(itemXml, 'published') || '';
   item.author = extractTag(itemXml, 'author') || extractTag(itemXml, 'dc:creator') || '';
-  item.content = extractTag(itemXml, 'content:encoded') || extractTag(itemXml, 'content') || '';
+  const rawContent = extractTag(itemXml, 'content:encoded') || extractTag(itemXml, 'content') || '';
+  item.content = rawContent ? stripHtml(rawContent) : '';
   
   // Special handling for Techmeme: extract actual article URL from description
   if (item.link && item.link.includes('techmeme.com') && item.description) {
