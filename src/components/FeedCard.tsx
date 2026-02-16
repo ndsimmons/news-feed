@@ -17,7 +17,8 @@ function decodeHtmlEntities(text: string): string {
     '&ldquo;': '\u201C',
     '&rdquo;': '\u201D',
     '&lsquo;': '\u2018',
-    '&rsquo;': '\u2019'
+    '&rsquo;': '\u2019',
+    '&hellip;': '\u2026'
   };
 
   // First handle named entities
@@ -45,24 +46,54 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
   const [isVoting, setIsVoting] = useState(false);
   const [userVote, setUserVote] = useState<number>(article.userVote || 0);
   
-  // Sync vote state when article prop updates (e.g., after feed re-fetch)
+  // Sync vote and save state when article prop updates (e.g., after feed re-fetch)
   useEffect(() => {
     if (article.userVote !== undefined) {
       setUserVote(article.userVote);
     }
-  }, [article.userVote]);
+    if (article.isSaved !== undefined) {
+      setIsSaved(article.isSaved);
+    }
+  }, [article.userVote, article.isSaved]);
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [showVoteFeedback, setShowVoteFeedback] = useState(false);
   const [feedbackType, setFeedbackType] = useState<'upvote' | 'downvote' | null>(null);
   const [stopBouncing, setStopBouncing] = useState(false);
-  const [isSaved, setIsSaved] = useState(isSavedView); // If in saved view, article is already saved
+  const [isSaved, setIsSaved] = useState(isSavedView || !!article.isSaved); // From saved view or API response
   const [isSaving, setIsSaving] = useState(false);
+  const [aiSummary, setAiSummary] = useState<string | undefined>(article.ai_summary);
   // Show raw score directly for transparent ranking
   const [currentScore, setCurrentScore] = useState<number | undefined>(article.score);
   const [scoreUpdating, setScoreUpdating] = useState(false);
+  const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
 
   const cardRef = useRef<HTMLElement>(null);
+
+  // For saved view: poll for AI summary if not yet available
+  useEffect(() => {
+    if (!isSavedView || aiSummary || !userId) return;
+    let cancelled = false;
+    let attempts = 0;
+    const poll = async () => {
+      while (!cancelled && attempts < 10) {
+        attempts++;
+        await new Promise(r => setTimeout(r, 2000)); // wait 2s between polls
+        try {
+          const res = await fetch(`${API_BASE_URL}/api/saved/summary?userId=${userId}&articleId=${article.id}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.ai_summary) {
+              setAiSummary(data.ai_summary);
+              return;
+            }
+          }
+        } catch {}
+      }
+    };
+    poll();
+    return () => { cancelled = true; };
+  }, [isSavedView, aiSummary, userId, article.id]);
 
   // Debug: Log if we're missing score
   useEffect(() => {
@@ -112,7 +143,15 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
       return;
     }
     
-    // Article clicks work for all users (no auth required to read articles)
+    // If this article is from an aggregator source, auto-add the original
+    // publication as a source for this user (fire-and-forget)
+    if (article.is_aggregator && isAuthenticated && userId) {
+      fetch(`${API_BASE_URL}/api/auto-add-source`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, articleUrl: article.url })
+      }).catch(() => {});
+    }
   };
 
   const handleVote = async (vote: number) => {
@@ -537,7 +576,7 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
         <div className="flex-1 min-w-0 relative z-10">
           <h3 className="article-title">
             <a 
-              href={article.spotify_url || (article.url?.includes('nytimes.com') ? `https://archive.is/newest/${article.url}` : article.url)} 
+              href={article.spotify_url || (article.use_archive ? `https://archive.is/newest/${article.url.split('?')[0]}` : article.url)} 
               target="_blank" 
               rel="noopener noreferrer"
               onClick={handleArticleClick}
@@ -556,10 +595,26 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
             </span>
           </div>
           
-          {article.summary && (
-            <p className="article-summary line-clamp-2">
-              {decodeHtmlEntities(article.summary)}
-            </p>
+          {(isSavedView ? aiSummary : (aiSummary || article.summary)) && (
+            <div 
+              className="cursor-pointer hover:bg-gray-50 -mx-1 px-1 py-1 rounded transition-colors"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsSummaryExpanded(!isSummaryExpanded);
+              }}
+            >
+              <p 
+                className="article-summary"
+                style={{
+                  display: '-webkit-box',
+                  WebkitLineClamp: isSummaryExpanded ? 'unset' : '5',
+                  WebkitBoxOrient: 'vertical' as any,
+                  overflow: isSummaryExpanded ? 'visible' : 'hidden'
+                }}
+              >
+                {isSavedView ? (aiSummary || 'Generating AI summary...') : (aiSummary ? aiSummary : decodeHtmlEntities(article.summary || ''))}
+              </p>
+            </div>
           )}
           
           <div className="flex items-center justify-between mt-3">

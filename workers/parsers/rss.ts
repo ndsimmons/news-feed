@@ -96,6 +96,15 @@ function parseRSSItem(itemXml: string): RSSItem {
       item.link = firstLinkMatch[1];
     }
   }
+
+  // Special handling for RealClearPolitics: use <originalLink> for the actual source URL
+  // RCP's RSS feed includes an <originalLink> tag pointing to the original publication
+  if (item.link && item.link.includes('realclearpolitics.com')) {
+    const originalLink = extractTag(itemXml, 'originalLink');
+    if (originalLink && originalLink.trim()) {
+      item.link = originalLink.trim();
+    }
+  }
   
   // Try to extract image
   const mediaContent = extractTag(itemXml, 'media:content');

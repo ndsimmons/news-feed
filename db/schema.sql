@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS sources (
   fetch_method TEXT NOT NULL, -- 'rss', 'api', 'scrape', 'manual'
   config TEXT, -- JSON config: API keys, RSS URLs, selectors, etc.
   active BOOLEAN DEFAULT 1,
+  use_archive BOOLEAN DEFAULT 0, -- redirect article links through archive.is
+  is_aggregator BOOLEAN DEFAULT 0, -- source links to articles from other publications
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (category_id) REFERENCES categories(id)

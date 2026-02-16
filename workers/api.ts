@@ -116,7 +116,7 @@ interface Env {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -162,6 +162,10 @@ export default {
 
       if (path === '/api/discover-source' && request.method === 'POST') {
         return await handleDiscoverSource(request, env, corsHeaders);
+      }
+
+      if (path === '/api/auto-add-source' && request.method === 'POST') {
+        return await handleAutoAddSource(request, env, corsHeaders);
       }
 
       if (path.startsWith('/api/sources/') && request.method === 'DELETE') {
@@ -233,6 +237,10 @@ export default {
         return await handleBackfillWeights(request, env, corsHeaders);
       }
 
+      if (path === '/api/backfill-summaries' && request.method === 'POST') {
+        return await handleBackfillSummaries(request, env, corsHeaders);
+      }
+
       // TEST ENDPOINT - Auto login as test user 999 (ONLY for development/testing)
       if (path === '/api/test-login' && request.method === 'POST') {
         return await handleTestLogin(request, env, corsHeaders);
@@ -261,11 +269,23 @@ export default {
 
       // Saved Articles endpoints
       if (path === '/api/saved' && request.method === 'GET') {
-        return await handleGetSavedArticles(request, env, corsHeaders);
+        return await handleGetSavedArticles(request, env, corsHeaders, ctx);
+      }
+
+      if (path === '/api/saved/summary' && request.method === 'GET') {
+        const summaryUrl = new URL(request.url);
+        const sUserId = parseInt(summaryUrl.searchParams.get('userId') || '0');
+        const sArticleId = parseInt(summaryUrl.searchParams.get('articleId') || '0');
+        const row = await env.DB.prepare(
+          'SELECT ai_summary FROM saved_articles WHERE user_id = ? AND article_id = ?'
+        ).bind(sUserId, sArticleId).first();
+        return new Response(JSON.stringify({ ai_summary: row?.ai_summary || null }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
       }
 
       if (path === '/api/saved' && request.method === 'POST') {
-        return await handleSaveArticle(request, env, corsHeaders);
+        return await handleSaveArticle(request, env, corsHeaders, ctx);
       }
 
       if (path.startsWith('/api/saved/') && request.method === 'DELETE') {
@@ -324,11 +344,19 @@ async function handleGetFeed(
 
   // Get voted article IDs
   const votedResult = await env.DB.prepare(
-    'SELECT article_id FROM votes WHERE user_id = ?'
+    'SELECT article_id, vote FROM votes WHERE user_id = ?'
   ).bind(userId).all();
 
   const votedArticleIds = new Set(
     votedResult.results.map((v: any) => v.article_id)
+  );
+
+  // Get saved article IDs (to include isSaved status in feed response)
+  const savedResult = await env.DB.prepare(
+    'SELECT article_id FROM saved_articles WHERE user_id = ?'
+  ).bind(userId).all();
+  const savedArticleIds = new Set(
+    savedResult.results.map((v: any) => v.article_id)
   );
 
   // ========================================
@@ -363,8 +391,13 @@ async function handleGetFeed(
   // Build query for articles - exclude those seen 2+ times in last 7 days
   // AND respect user source preferences
   // AND exclude downvoted articles
+  //
+  // Impression suppression (consolidated logic):
+  //   1. ALL pages: suppress articles seen 3+ times in the last 24 hours
+  //   2. Page 1 only: also suppress articles viewed in the last 30 minutes
+  //      (so returning to the feed shows fresh content, not stuff you just scrolled past)
   let query = `
-    SELECT a.*, s.name as source_name, s.spotify_url as spotify_url, c.name as category_name, c.slug as category_slug
+    SELECT a.*, s.name as source_name, s.spotify_url as spotify_url, s.use_archive as use_archive, s.is_aggregator as is_aggregator, c.name as category_name, c.slug as category_slug
     FROM articles a
     LEFT JOIN sources s ON a.source_id = s.id
     LEFT JOIN categories c ON a.category_id = c.id
@@ -374,7 +407,7 @@ async function handleGetFeed(
       SELECT 1 FROM article_impressions ai
       WHERE ai.user_id = ?
         AND ai.article_id = a.id
-        AND ai.impression_count >= 4
+        AND ai.impression_count >= 3
         AND ai.last_seen_at > datetime('now', '-1 days')
     )
     AND NOT EXISTS (
@@ -391,7 +424,19 @@ async function handleGetFeed(
     AND (usp.active IS NULL OR usp.active = 1)
   `;
 
-  const params: any[] = [userId, userId, userId, userId]; // Add userId for source prefs, impression filter, downvote filter, and saved filter
+  const params: any[] = [userId, userId, userId, userId]; // userId for source prefs, impression filter, downvote filter, saved filter
+
+  // Page 1 only: also suppress articles viewed in the last 30 minutes
+  if (!isLoggedOut && offset === 0) {
+    query += `
+    AND NOT EXISTS (
+      SELECT 1 FROM article_impressions ai2
+      WHERE ai2.user_id = ?
+        AND ai2.article_id = a.id
+        AND ai2.last_seen_at > datetime('now', '-30 minutes')
+    )`;
+    params.push(userId);
+  }
 
   if (categorySlug) {
     query += ' AND c.slug = ?';
@@ -547,6 +592,10 @@ async function handleGetFeed(
      ...a,
      contentScore: contentScoreMap.get(a.id) || 0
    }));
+
+   // Impression suppression is now fully handled in the SQL query above.
+   // Rule 1 (all pages): suppress articles seen 3+ times in last 24 hours.
+   // Rule 2 (page 1 only): suppress articles viewed in the last 30 minutes.
    
    // ========================================
    // LOGGED OUT FEED (Generic Diverse Content)
@@ -560,15 +609,16 @@ async function handleGetFeed(
     const diverseArticles = scoreAndSortArticlesOnboarding(articles);
     
     // Normalize scores to bell curve (mean=100, stdDev=20) before pagination
-    const normalizedArticles = normalizeScoresToBellCurve(diverseArticles);
+    let normalizedArticles = normalizeScoresToBellCurve(diverseArticles);
     
     // Apply pagination
     const topArticles = normalizedArticles.slice(offset, offset + limit);
     
-    // Add user vote status (always 0 for logged out)
+    // Add user vote/save status (always 0/false for logged out)
     const enrichedArticles = topArticles.map(article => ({
       ...article,
-      userVote: 0
+      userVote: 0,
+      isSaved: false
     }));
     
     // DEBUG: Log first article to verify adjustedScore is present
@@ -579,8 +629,8 @@ async function handleGetFeed(
     
     const response: FeedResponse = {
       articles: enrichedArticles,
-      total: diverseArticles.length,
-      hasMore: offset + limit < diverseArticles.length
+      total: normalizedArticles.length,
+      hasMore: offset + limit < normalizedArticles.length
     };
     
     return new Response(JSON.stringify(response), {
@@ -620,16 +670,17 @@ async function handleGetFeed(
     }
     
     // Normalize scores to bell curve (mean=100, stdDev=20) before pagination
-    const normalizedArticles = normalizeScoresToBellCurve(onboardingArticles);
+    let normalizedArticles = normalizeScoresToBellCurve(onboardingArticles);
     
     // Apply pagination
     const topArticles = normalizedArticles.slice(offset, offset + limit);
     
-    // Add user vote status
+    // Add user vote and save status
     const enrichedArticles = topArticles.map(article => ({
       ...article,
       userVote: votedArticleIds.has(article.id) ? 
-        (votedResult.results.find((v: any) => v.article_id === article.id)?.vote || 0) : 0
+        (votedResult.results.find((v: any) => v.article_id === article.id)?.vote || 0) : 0,
+      isSaved: savedArticleIds.has(article.id)
     }));
     
     // DEBUG: Log first article to verify adjustedScore is present
@@ -640,8 +691,8 @@ async function handleGetFeed(
     
     const response: FeedResponse = {
       articles: enrichedArticles,
-      total: onboardingArticles.length,
-      hasMore: offset + limit < onboardingArticles.length
+      total: normalizedArticles.length,
+      hasMore: offset + limit < normalizedArticles.length
     };
     
     return new Response(JSON.stringify(response), {
@@ -669,16 +720,17 @@ async function handleGetFeed(
     const adoptionArticles = scoreAndSortArticlesAdoption(articles, recencyDecayHours, weights);
     
     // Normalize scores to bell curve (mean=100, stdDev=20) before pagination
-    const normalizedArticles = normalizeScoresToBellCurve(adoptionArticles);
+    let normalizedArticles = normalizeScoresToBellCurve(adoptionArticles);
     
     // Apply pagination
     const topArticles = normalizedArticles.slice(offset, offset + limit);
     
-    // Add user vote status
+    // Add user vote and save status
     const enrichedArticles = topArticles.map(article => ({
       ...article,
       userVote: votedArticleIds.has(article.id) ? 
-        (votedResult.results.find((v: any) => v.article_id === article.id)?.vote || 0) : 0
+        (votedResult.results.find((v: any) => v.article_id === article.id)?.vote || 0) : 0,
+      isSaved: savedArticleIds.has(article.id)
     }));
     
     // DEBUG: Log first article to verify adjustedScore is present
@@ -689,8 +741,8 @@ async function handleGetFeed(
     
     const response: FeedResponse = {
       articles: enrichedArticles,
-      total: adoptionArticles.length,
-      hasMore: offset + limit < adoptionArticles.length
+      total: normalizedArticles.length,
+      hasMore: offset + limit < normalizedArticles.length
     };
     
     return new Response(JSON.stringify(response), {
@@ -892,21 +944,173 @@ async function handleAddSource(
 ): Promise<Response> {
   const body = await request.json();
 
+  // Auto-classify into a category based on source name and URL
+  const categoryId = body.category_id || await autoClassifyCategory(body.name, body.url, env);
+
   const result = await env.DB.prepare(`
     INSERT INTO sources (name, url, category_id, fetch_method, config, active)
     VALUES (?, ?, ?, ?, ?, ?)
   `).bind(
     body.name, 
     body.url, 
-    body.category_id, 
+    categoryId, 
     body.fetch_method, 
     body.config, 
     body.active
   ).run();
 
-  return new Response(JSON.stringify({ success: true, id: result.meta.last_row_id }), {
+  return new Response(JSON.stringify({ success: true, id: result.meta.last_row_id, category_id: categoryId }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   });
+}
+
+/**
+ * Auto-classify a source into a category based on name and URL keywords.
+ * Falls back to Tech/AI (id 1) if no strong match.
+ */
+async function autoClassifyCategory(name: string, url: string, env: Env): Promise<number> {
+  const text = `${name} ${url}`.toLowerCase();
+
+  // Keyword lists per category slug
+  const categoryKeywords: Record<string, string[]> = {
+    'tech-ai': ['tech', 'ai', 'artificial intelligence', 'software', 'programming', 'code', 'developer', 'startup', 'silicon', 'cyber', 'hacker', 'verge', 'wired', 'ars', 'engadget', 'mashable', 'gizmodo', 'techcrunch', 'github', 'crypto', 'blockchain', 'cloud', 'data', 'machine learning'],
+    'business-finance': ['business', 'finance', 'market', 'stock', 'economy', 'economic', 'invest', 'bank', 'wall street', 'bloomberg', 'reuters', 'cnbc', 'yahoo finance', 'fortune', 'forbes', 'economist', 'money', 'trade', 'trading', 'venture', 'capital'],
+    'sports': ['sport', 'espn', 'nfl', 'nba', 'mlb', 'nhl', 'soccer', 'football', 'basketball', 'baseball', 'hockey', 'tennis', 'golf', 'athletic', 'bleacher', 'scores', 'league', 'team', 'player', 'game', 'match', 'fifa', 'olympics'],
+    'politics': ['politic', 'government', 'congress', 'senate', 'white house', 'democrat', 'republican', 'election', 'vote', 'policy', 'legislation', 'capitol', 'politico', 'hill', 'washington post', 'nytimes', 'bbc news', 'npr', 'guardian', 'foreign affairs', 'diplomat'],
+  };
+
+  // Fetch categories from DB to map slug -> id
+  const catResult = await env.DB.prepare('SELECT id, slug FROM categories').all();
+  const slugToId: Record<string, number> = {};
+  for (const cat of catResult.results as any[]) {
+    slugToId[cat.slug] = cat.id;
+  }
+
+  // Score each category by keyword matches
+  let bestSlug = 'tech-ai';
+  let bestScore = 0;
+
+  for (const [slug, keywords] of Object.entries(categoryKeywords)) {
+    let score = 0;
+    for (const kw of keywords) {
+      if (text.includes(kw)) score++;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestSlug = slug;
+    }
+  }
+
+  const categoryId = slugToId[bestSlug] || 1;
+  console.log(`Auto-classified "${name}" (${url}) -> ${bestSlug} (id ${categoryId}, score ${bestScore})`);
+  return categoryId;
+}
+
+/**
+ * POST /api/auto-add-source - Auto-add an original publication as a source when
+ * a user clicks an article from an aggregator (e.g., Techmeme).
+ * Extracts the domain from the article URL, creates the source if needed,
+ * and ensures it's active for the user.
+ */
+async function handleAutoAddSource(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  try {
+    const { userId, articleUrl } = await request.json() as { userId: number; articleUrl: string };
+    if (!userId || !articleUrl) {
+      return new Response(JSON.stringify({ error: 'userId and articleUrl required' }), {
+        status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Extract origin domain from article URL
+    let origin: string;
+    try {
+      const parsed = new URL(articleUrl);
+      origin = parsed.origin; // e.g., https://www.axios.com
+    } catch {
+      return new Response(JSON.stringify({ error: 'Invalid article URL' }), {
+        status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Derive a clean name from the hostname
+    const hostname = new URL(origin).hostname.replace('www.', '');
+    const siteName = hostname.split('.')[0].charAt(0).toUpperCase() + hostname.split('.')[0].slice(1);
+
+    // Check if a source with this domain already exists
+    const existing = await env.DB.prepare(
+      `SELECT id, name FROM sources WHERE url LIKE ? LIMIT 1`
+    ).bind(`%${hostname}%`).first();
+
+    let sourceId: number;
+    let sourceName: string;
+    let created = false;
+
+    if (existing) {
+      sourceId = existing.id as number;
+      sourceName = existing.name as string;
+    } else {
+      // Auto-classify category
+      const categoryId = await autoClassifyCategory(siteName, origin, env);
+
+      // Try to discover RSS feed for this source (quick check — just common paths)
+      let fetchMethod = 'scrape';
+      let config: Record<string, any> = { scrape_url: origin, use_sitemap: false };
+
+      // Quick RSS probe: try /feed and /rss.xml
+      const quickPaths = ['/feed', '/rss.xml', '/feed.xml', '/rss', '/atom.xml'];
+      for (const path of quickPaths) {
+        try {
+          const feedRes = await fetch(origin + path, {
+            headers: { 'User-Agent': 'NewsFeedAggregator/1.0' },
+            redirect: 'follow'
+          });
+          if (feedRes.ok) {
+            const feedText = await feedRes.text();
+            if (feedText.includes('<rss') || feedText.includes('<feed') || feedText.includes('<channel')) {
+              fetchMethod = 'rss';
+              config = { rss_url: origin + path };
+              break;
+            }
+          }
+        } catch { /* try next */ }
+      }
+
+      // Create the source
+      const result = await env.DB.prepare(`
+        INSERT INTO sources (name, url, category_id, fetch_method, config, active)
+        VALUES (?, ?, ?, ?, ?, 1)
+      `).bind(siteName, origin, categoryId, fetchMethod, JSON.stringify(config)).run();
+
+      sourceId = result.meta.last_row_id as number;
+      sourceName = siteName;
+      created = true;
+      console.log(`Auto-added source "${siteName}" (${origin}) via aggregator click, method: ${fetchMethod}`);
+    }
+
+    // Ensure user has this source active in their preferences
+    await env.DB.prepare(`
+      INSERT INTO user_source_preferences (user_id, source_id, active)
+      VALUES (?, ?, 1)
+      ON CONFLICT(user_id, source_id) DO UPDATE SET active = 1, updated_at = datetime('now')
+    `).bind(userId, sourceId).run();
+
+    return new Response(JSON.stringify({
+      success: true,
+      source_id: sourceId,
+      source_name: sourceName,
+      created
+    }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    console.error('Error auto-adding source:', error);
+    return new Response(JSON.stringify({ error: 'Failed to auto-add source' }), {
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
 }
 
 /**
@@ -1999,8 +2203,13 @@ async function handleTestLogin(
     await env.DB.prepare('DELETE FROM user_seed_articles WHERE user_id = ?').bind(TEST_USER_ID).run();
     await env.DB.prepare('DELETE FROM interest_weights WHERE user_id = ?').bind(TEST_USER_ID).run();
     await env.DB.prepare('DELETE FROM user_sessions WHERE user_id = ?').bind(TEST_USER_ID).run();
+    await env.DB.prepare('DELETE FROM article_impressions WHERE user_id = ?').bind(TEST_USER_ID).run();
+    await env.DB.prepare('DELETE FROM user_source_preferences WHERE user_id = ?').bind(TEST_USER_ID).run();
+    // Reset display name and set email to simulate a fresh ndsimmons@gmail.com signup
+    await env.DB.prepare('UPDATE users SET display_name = NULL, email = ? WHERE id = ?')
+      .bind('ndsimmons@gmail.com', TEST_USER_ID).run();
     
-    console.log('Test user 999 data reset');
+    console.log('Test user 999 data fully reset');
     
     // Get test user info
     const user = await env.DB.prepare(
@@ -2452,7 +2661,8 @@ async function handleDeleteProfile(
 async function handleGetSavedArticles(
   request: Request,
   env: Env,
-  corsHeaders: Record<string, string>
+  corsHeaders: Record<string, string>,
+  ctx: ExecutionContext
 ): Promise<Response> {
   try {
     const url = new URL(request.url);
@@ -2464,9 +2674,13 @@ async function handleGetSavedArticles(
       SELECT 
         a.*,
         s.name as source_name,
+        s.use_archive as use_archive,
+        s.is_aggregator as is_aggregator,
+        s.spotify_url as spotify_url,
         c.name as category_name,
         c.slug as category_slug,
         sa.saved_at,
+        sa.ai_summary,
         v.vote as userVote
       FROM saved_articles sa
       JOIN articles a ON sa.article_id = a.id
@@ -2477,6 +2691,23 @@ async function handleGetSavedArticles(
       ORDER BY sa.saved_at DESC
       LIMIT ? OFFSET ?
     `).bind(userId, userId, limit, offset).all();
+
+    // Trigger AI summary generation for any saved articles without summaries
+    // Uses waitUntil to ensure generation completes after response is sent
+    const articlesWithoutSummaries = (result.results as any[]).filter(a => !a.ai_summary);
+    if (articlesWithoutSummaries.length > 0) {
+      ctx.waitUntil(
+        (async () => {
+          for (const article of articlesWithoutSummaries) {
+            try {
+              await generateArticleSummary(article.id, userId, env);
+            } catch (err) {
+              console.error(`Error generating summary for article ${article.id}:`, err);
+            }
+          }
+        })()
+      );
+    }
 
     return new Response(JSON.stringify({ 
       articles: result.results,
@@ -2499,7 +2730,8 @@ async function handleGetSavedArticles(
 async function handleSaveArticle(
   request: Request,
   env: Env,
-  corsHeaders: Record<string, string>
+  corsHeaders: Record<string, string>,
+  ctx: ExecutionContext
 ): Promise<Response> {
   try {
     const { articleId, userId } = await request.json() as { articleId: number; userId: number };
@@ -2546,6 +2778,14 @@ async function handleSaveArticle(
       `).bind(userId, article.source_id).run();
     }
 
+    // Generate AI summary in the background using waitUntil
+    // This ensures the summary generation completes even after the response is sent
+    ctx.waitUntil(
+      generateArticleSummary(articleId, userId, env).catch(err =>
+        console.error('Error generating summary:', err)
+      )
+    );
+
     return new Response(JSON.stringify({ success: true }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
@@ -2556,6 +2796,94 @@ async function handleSaveArticle(
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   }
+}
+
+/**
+ * POST /api/backfill-summaries - Generate AI summaries for all saved articles that don't have one
+ */
+async function handleBackfillSummaries(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  try {
+    // Clear all existing summaries and regenerate
+    await env.DB.prepare('UPDATE saved_articles SET ai_summary = NULL').run();
+    
+    const result = await env.DB.prepare(
+      'SELECT article_id, user_id FROM saved_articles WHERE ai_summary IS NULL'
+    ).all();
+
+    const items = result.results as Array<{ article_id: number; user_id: number }>;
+    console.log(`Backfilling summaries for ${items.length} saved articles`);
+
+    let completed = 0;
+    let failed = 0;
+    // Process sequentially to avoid overwhelming Workers AI
+    for (const item of items) {
+      try {
+        await generateArticleSummary(item.article_id, item.user_id, env);
+        completed++;
+      } catch (err) {
+        console.error(`Failed to generate summary for article ${item.article_id}:`, err);
+        failed++;
+      }
+    }
+
+    return new Response(JSON.stringify({ success: true, total: items.length, completed, failed }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  } catch (error) {
+    console.error('Error backfilling summaries:', error);
+    return new Response(JSON.stringify({ error: 'Backfill failed' }), {
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+/**
+ * Generate a concise AI summary for a saved article using Workers AI (Llama 4 Scout).
+ * Always generates a fresh summary focused on key insights, facts, and numbers.
+ * Returns the generated summary.
+ */
+async function generateArticleSummary(articleId: number, userId: number, env: Env): Promise<string | null> {
+  const article = await env.DB.prepare(
+    'SELECT title, summary, content FROM articles WHERE id = ?'
+  ).bind(articleId).first() as { title: string; summary: string | null; content: string | null } | null;
+
+  if (!article) return null;
+
+  const inputText = article.content || article.summary || article.title;
+  let aiSummary: string;
+
+  try {
+    const response = await env.AI.run('@cf/meta/llama-4-scout-17b-16e-instruct', {
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a news summarizer. Write a concise, informative summary that fits in 4 lines of text. Output ONLY the summary text, no quotes, no labels, no preamble.'
+        },
+        {
+          role: 'user',
+          content: `Summarize this article concisely:\n\nTitle: ${article.title}\n\n${inputText.substring(0, 2000)}\n\nGet to the point as quickly as possible. Assume the reader understands the terms being used. Give the most important insights and takeaways from the article, focusing on facts and numbers, not on opinions.`
+        }
+      ],
+      max_tokens: 150
+    }) as { response: string };
+
+    aiSummary = response.response?.trim() || article.title;
+    console.log(`Article ${articleId}: AI generated summary (${aiSummary.split(/\s+/).length} words)`);
+  } catch (err) {
+    console.error(`Article ${articleId}: AI summary failed, falling back to title`, err);
+    aiSummary = article.title;
+  }
+
+  // Store the summary
+  await env.DB.prepare(
+    'UPDATE saved_articles SET ai_summary = ? WHERE user_id = ? AND article_id = ?'
+  ).bind(aiSummary, userId, articleId).run();
+  
+  return aiSummary;
 }
 
 /**

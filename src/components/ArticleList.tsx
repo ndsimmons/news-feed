@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import FeedCard from './FeedCard';
 import { DiscoveryModeCard } from './DiscoveryModeBadge';
 import CategoryFilter from './CategoryFilter';
@@ -29,10 +29,14 @@ export default function ArticleList() {
   const [pendingImpressions, setPendingImpressions] = useState<Set<number>>(new Set());
   const [lastFetchTime, setLastFetchTime] = useState<number>(Date.now());
   const [voteCount, setVoteCount] = useState(0);
+  const voteCountRef = useRef(0);
 
   useEffect(() => {
     // Wait for auth to resolve before fetching so we send the correct userId
     if (authLoading) return;
+    
+    // Scroll to top on category change
+    window.scrollTo({ top: 0, behavior: 'instant' });
     
     setPage(1);
     setArticles([]);
@@ -53,7 +57,9 @@ export default function ArticleList() {
           const response = await fetch(`${API_BASE_URL}/api/user/stats?userId=${user.id}`);
           if (response.ok) {
             const data = await response.json();
-            setVoteCount(data.voteCount || 0);
+            const count = data.voteCount || 0;
+            voteCountRef.current = count;
+            setVoteCount(count);
           }
         } catch (error) {
           console.error('Error fetching vote count:', error);
@@ -64,25 +70,28 @@ export default function ArticleList() {
   }, [isAuthenticated, user]);
 
   // Listen for vote-cast events to update count
+  // Uses a ref to avoid stale closure issues — the listener is registered once
+  // and always reads the current count from the ref.
   useEffect(() => {
     const handleVoteCast = () => {
-      const previousCount = voteCount;
+      const previousCount = voteCountRef.current;
       const newCount = previousCount + 1;
       console.log(`ArticleList: Vote cast! Count: ${previousCount} → ${newCount}`);
+      voteCountRef.current = newCount;
       setVoteCount(newCount);
       
-      // Show celebration modal when reaching exactly 10 votes
-      if (newCount === 10) {
-        console.log('ArticleList: 🎉 Reached 10 votes! Showing celebration modal...');
+      // Show celebration modal when reaching 11 votes (buffer for potential double-counts)
+      if (newCount === 11) {
+        console.log('ArticleList: Reached 11 votes! Showing celebration modal...');
         setTimeout(() => {
           setShowCelebration(true);
-        }, 500); // Small delay so rooster animation completes
+        }, 500);
       }
     };
 
     window.addEventListener('vote-cast', handleVoteCast);
     return () => window.removeEventListener('vote-cast', handleVoteCast);
-  }, [voteCount]);
+  }, []); // Empty deps — ref ensures we always have the current count
 
   // Listen for first interaction being applied after signup
   useEffect(() => {
@@ -99,7 +108,11 @@ export default function ArticleList() {
       if (user) {
         fetch(`${API_BASE_URL}/api/user/stats?userId=${user.id}`)
           .then(res => res.json())
-          .then(data => setVoteCount(data.voteCount || 0))
+          .then(data => {
+            const count = data.voteCount || 0;
+            voteCountRef.current = count;
+            setVoteCount(count);
+          })
           .catch(err => console.error('Error fetching vote count:', err));
       }
     };
@@ -483,9 +496,10 @@ export default function ArticleList() {
   };
 
   const handleCelebrationClose = () => {
-    console.log('ArticleList: Closing celebration modal and refreshing feed');
+    console.log('ArticleList: Closing celebration modal and refreshing feed with adoption algorithm');
     setShowCelebration(false);
-    // Refresh feed to show new Personalized algorithm
+    // Scroll to top and refresh feed to show new Personalized algorithm
+    window.scrollTo({ top: 0, behavior: 'instant' });
     handleRefresh();
   };
 
@@ -554,7 +568,7 @@ export default function ArticleList() {
           </div>
         ) : (
           <div className="space-y-0">
-            {isAuthenticated && user && voteCount < 10 && (
+            {isAuthenticated && user && voteCount < 11 && (
               <DiscoveryModeCard userId={user.id} />
             )}
             {articles.map((article) => (

@@ -34,12 +34,12 @@ export default function DiscoveryModeBadge({ userId }: DiscoveryModeBadgeProps) 
     return () => window.removeEventListener('vote-cast', handleVoteUpdate);
   }, [userId]);
 
-  // Don't show if user has 10+ votes (graduated from onboarding)
-  if (voteCount === null || voteCount >= 10) {
+  // Don't show if user has 11+ votes (graduated from onboarding)
+  if (voteCount === null || voteCount >= 11) {
     return null;
   }
 
-  const progress = (voteCount / 10) * 100;
+  const progress = Math.min((voteCount / 10) * 100, 100);
 
   return (
     <div 
@@ -134,11 +134,11 @@ export function DiscoveryModeCard({ userId }: DiscoveryModeBadgeProps) {
     return () => window.removeEventListener('vote-cast', handleVoteUpdate);
   }, [userId]);
 
-  if (voteCount === null || voteCount >= 10) {
+  if (voteCount === null || voteCount >= 11) {
     return null;
   }
 
-  const progress = (voteCount / 10) * 100;
+  const progress = Math.min((voteCount / 10) * 100, 100);
 
   return (
     <div className="md:hidden border-b border-gray-300 py-4">

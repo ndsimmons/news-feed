@@ -53,9 +53,13 @@ export interface Article {
   category_name?: string;
   category_slug?: string;
   spotify_url?: string; // Spotify link for podcasts
+  use_archive?: number; // 1 = redirect through archive.is
+  is_aggregator?: number; // 1 = source is an aggregator, article URL is from original publication
   score?: number;
   adjustedScore?: number; // Normalized score (bell curve, mean=100)
   userVote?: number; // -1, 0, 1
+  isSaved?: boolean; // true if user has saved this article
+  ai_summary?: string; // AI-generated 35-word summary for saved articles
   contentScore?: number;
 }
 
