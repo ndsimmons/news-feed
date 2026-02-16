@@ -113,6 +113,7 @@ interface Env {
   AI: any; // Cloudflare AI binding
   VECTORIZE: any; // Vectorize binding
   RESEND_API_KEY: string; // Resend API key for magic links
+  GOOGLE_AI_API_KEY: string; // Google AI Studio API key for Gemini
 }
 
 export default {
@@ -2881,7 +2882,7 @@ async function backfillInBatches(
 }
 
 /**
- * Generate a concise AI summary for a saved article using Workers AI (Llama 4 Scout).
+ * Generate a concise AI summary for a saved article using Google Gemini 3 Flash.
  * Always generates a fresh summary focused on key insights, facts, and numbers.
  * Returns the generated summary.
  */
@@ -2895,12 +2896,7 @@ async function generateArticleSummary(articleId: number, userId: number, env: En
   const inputText = article.content || article.summary || article.title;
   let aiSummary: string;
 
-   try {
-     const response = await env.AI.run('@cf/meta/llama-4-scout-17b-16e-instruct', {
-       messages: [
-         {
-           role: 'system',
-           content: `You are a senior investigative data journalist—a hybrid of Axios "Smart Brevity" and Stratechery structural analysis. You ignore PR fluff to find the startling, hard data and strategic shifts hidden in news stories.
+  const systemPrompt = `You are a senior investigative data journalist—a hybrid of Axios "Smart Brevity" and Stratechery structural analysis. You ignore PR fluff to find the startling, hard data and strategic shifts hidden in news stories.
 
 Strict Grounding Rule: Use ONLY the facts, names, and titles provided in the text below. Do not use your internal knowledge to correct or supplement names (e.g., if the text says "Kennedy," do not use "Xavier Becerra"). If a specific name or data point is in the text, that is your only truth.
 
@@ -2922,20 +2918,38 @@ Limit: STRICTLY under 150 tokens. Aim for 60-90 words total. Do not exceed this 
 
 Avoid "vague-speak" (e.g., massive, significant). Let the numbers do the talking.
 
-No "AI-isms" (e.g., "The article highlights," "In conclusion"). Start immediately with the facts.`
-         },
-         {
-           role: 'user',
-           content: `Title: ${article.title}\n\nText: ${inputText.substring(0, 2000)}`
-         }
-       ],
-       max_tokens: 150
-     }) as { response: string };
+No "AI-isms" (e.g., "The article highlights," "In conclusion"). Start immediately with the facts.`;
 
-    aiSummary = response.response?.trim() || article.title;
-    console.log(`Article ${articleId}: AI generated summary (${aiSummary.split(/\s+/).length} words)`);
+  const userPrompt = `Title: ${article.title}\n\nText: ${inputText.substring(0, 2000)}`;
+
+  try {
+    const geminiResponse = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${env.GOOGLE_AI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+          generationConfig: {
+            maxOutputTokens: 500,
+            temperature: 0.7,
+            thinkingConfig: { thinkingBudget: 0 }
+          }
+        })
+      }
+    );
+
+    if (!geminiResponse.ok) {
+      const errorText = await geminiResponse.text();
+      throw new Error(`Gemini API error ${geminiResponse.status}: ${errorText}`);
+    }
+
+    const geminiData = await geminiResponse.json() as any;
+    aiSummary = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || article.title;
+    console.log(`Article ${articleId}: Gemini generated summary (${aiSummary.split(/\s+/).length} words)`);
   } catch (err) {
-    console.error(`Article ${articleId}: AI summary failed, falling back to title`, err);
+    console.error(`Article ${articleId}: Gemini summary failed, falling back to title`, err);
     aiSummary = article.title;
   }
 
