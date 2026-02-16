@@ -107,6 +107,11 @@ function calculateDirectContentScore(
   return Math.round(score * 100) / 100;
 }
 
+// Default sources for new user signups. Sources NOT in this list get disabled (active=0).
+// Arts/Culture: 19,20,21,22,39,43 | Business: 5,10,12,16,17 | Politics: 14,15,23,36,38
+// Sports: 24,25,26,27,42 | Tech/AI: 1,11,13,18,40,41
+const DEFAULT_SOURCE_IDS = [1, 5, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 36, 38, 39, 40, 41, 42, 43];
+
 interface Env {
   DB: D1Database;
   KV: KVNamespace;
@@ -1414,6 +1419,15 @@ async function handleSendMagicLink(
       UNION ALL
       SELECT ?, NULL, id, 1.0 FROM sources
     `).bind(userId, userId).run();
+
+    // Seed new user with default sources only.
+    // Disable all non-default sources via user_source_preferences (opt-out system).
+    // Default sources are the curated set; everything else gets active=0.
+    await env.DB.prepare(`
+      INSERT OR IGNORE INTO user_source_preferences (user_id, source_id, active)
+      SELECT ?, id, CASE WHEN id IN (${DEFAULT_SOURCE_IDS.join(',')}) THEN 1 ELSE 0 END
+      FROM sources WHERE active = 1
+    `).bind(userId).run();
   }
 
   // Send email via Resend (include sessionId in magic link)

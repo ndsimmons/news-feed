@@ -1,0 +1,32 @@
+-- Migration: Default source seeding for new user signups
+-- Date: 2026-02-16
+-- Description:
+--   New users now get a curated default set of sources on signup.
+--   The system is opt-out: no user_source_preferences row = source is shown.
+--   On signup, we INSERT rows for ALL active sources:
+--     - Default sources get active=1
+--     - Non-default sources get active=0
+--
+--   This is handled in code (workers/api.ts handleSendMagicLink) using
+--   the DEFAULT_SOURCE_IDS constant. No schema changes required.
+--
+-- New sources added this session:
+--   38 - BBC News (Politics, feed: https://feeds.bbci.co.uk/news/rss.xml, click_treatment: direct)
+--   39 - Vulture (Arts/Culture, scrape, click_treatment: direct)
+--   40 - Ars Technica (Tech/AI, feed: https://feeds.arstechnica.com/arstechnica/index, click_treatment: direct)
+--   41 - The Information (Tech/AI, feed: https://www.theinformation.com/feed, click_treatment: archive)
+--   42 - The Athletic (Sports, feed: https://theathletic.com/feeds/rss/news/, click_treatment: archive)
+--   43 - The Ringer (Arts/Culture, scrape, click_treatment: direct)
+--
+-- Default source IDs (27 sources):
+--   Tech/AI (1):    1 (Techmeme), 11 (WSJ Tech), 13 (TechCrunch), 18 (NYT Technology), 40 (Ars Technica), 41 (The Information)
+--   Business (2):   5 (CNBC), 10 (WSJ Business), 12 (WSJ Economy), 16 (NYT Business), 17 (NYT DealBook)
+--   Sports (3):     24 (ESPN Top), 25 (ESPN NFL), 26 (ESPN NBA), 27 (ESPN MLB), 42 (The Athletic)
+--   Politics (4):   14 (NYT US), 15 (NYT Politics), 23 (RealClearPolitics), 36 (CNN), 38 (BBC News)
+--   Arts/Culture (5): 19 (Paris Review), 20 (New Yorker Books), 21 (NYT Book Review), 22 (NYT Arts), 39 (Vulture), 43 (The Ringer)
+--
+-- Non-default sources (disabled for new users):
+--   2 (Stratechery), 4 (Yahoo Finance), 28-33 (podcasts), 34 (Sherwood News), 35 (NY Post), 37 (Wide World of News)
+--
+-- No SQL to run — logic is entirely in application code.
+-- This file serves as documentation of the change.
