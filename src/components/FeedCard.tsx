@@ -4,33 +4,60 @@ import { API_BASE_URL } from '../lib/config';
 
 // Decode HTML entities in text
 function decodeHtmlEntities(text: string): string {
-  const entities: Record<string, string> = {
-    '&amp;': '&',
-    '&lt;': '<',
-    '&gt;': '>',
-    '&quot;': '"',
-    '&#39;': "'",
-    '&apos;': "'",
-    '&nbsp;': ' ',
-    '&mdash;': '\u2014',
-    '&ndash;': '\u2013',
-    '&ldquo;': '\u201C',
-    '&rdquo;': '\u201D',
-    '&lsquo;': '\u2018',
-    '&rsquo;': '\u2019',
-    '&hellip;': '\u2026'
-  };
+   const entities: Record<string, string> = {
+     '&amp;': '&',
+     '&lt;': '<',
+     '&gt;': '>',
+     '&quot;': '"',
+     '&#39;': "'",
+     '&apos;': "'",
+     '&nbsp;': ' ',
+     '&mdash;': '\u2014',
+     '&ndash;': '\u2013',
+     '&ldquo;': '\u201C',
+     '&rdquo;': '\u201D',
+     '&lsquo;': '\u2018',
+     '&rsquo;': '\u2019',
+     '&hellip;': '\u2026'
+   };
 
-  // First handle named entities
-  let decoded = text.replace(/&[a-z]+;/gi, match => entities[match] || match);
+   // First handle named entities
+   let decoded = text.replace(/&[a-z]+;/gi, match => entities[match] || match);
+   
+   // Then handle numeric entities (e.g., &#8220; or &#x201c;)
+   decoded = decoded.replace(/&#(x?)([0-9a-f]+);/gi, (match, isHex, code) => {
+     const num = isHex ? parseInt(code, 16) : parseInt(code, 10);
+     return String.fromCharCode(num);
+   });
+   
+   return decoded;
+}
+
+// Render markdown-formatted summary with support for **bold** syntax
+function renderMarkdownSummary(text: string): React.ReactNode {
+  if (!text) return null;
   
-  // Then handle numeric entities (e.g., &#8220; or &#x201c;)
-  decoded = decoded.replace(/&#(x?)([0-9a-f]+);/gi, (match, isHex, code) => {
-    const num = isHex ? parseInt(code, 16) : parseInt(code, 10);
-    return String.fromCharCode(num);
-  });
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  const boldRegex = /\*\*(.+?)\*\*/g;
+  let match;
   
-  return decoded;
+  while ((match = boldRegex.exec(text)) !== null) {
+    // Add text before the bold section
+    if (match.index > lastIndex) {
+      parts.push(text.substring(lastIndex, match.index));
+    }
+    // Add the bold text
+    parts.push(<strong key={`bold-${match.index}`}>{match[1]}</strong>);
+    lastIndex = match.index + match[0].length;
+  }
+  
+  // Add remaining text
+  if (lastIndex < text.length) {
+    parts.push(text.substring(lastIndex));
+  }
+  
+  return parts.length > 0 ? parts : text;
 }
 
 interface FeedCardProps {
@@ -612,7 +639,7 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
                   overflow: isSummaryExpanded ? 'visible' : 'hidden'
                 }}
               >
-                {aiSummary || (isSavedView ? 'Generating AI summary...' : decodeHtmlEntities(article.summary || ''))}
+                {renderMarkdownSummary(aiSummary || (isSavedView ? 'Generating AI summary...' : decodeHtmlEntities(article.summary || '')))}
               </p>
             </div>
           )}
