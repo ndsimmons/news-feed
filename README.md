@@ -4,7 +4,7 @@ A personalized news aggregation website built with **Astro**, **Cloudflare**, an
 
 ## Features
 
-- 📰 **Multi-source aggregation** from Tech/AI, Business/Finance, Sports, and Politics
+- 📰 **Multi-source aggregation** from Tech, Business, Sports, Politics, Culture, and Podcasts
 - 🎯 **Smart recommendations** based on your voting behavior
 - 👍👎 **Swipe to vote** on articles (desktop: keyboard arrows or mouse drag)
 - 💾 **Cloudflare D1** database for storing articles and preferences
@@ -23,12 +23,12 @@ A personalized news aggregation website built with **Astro**, **Cloudflare**, an
 
 ## Data Sources
 
-### Tech/AI
+### Tech
 - Techmeme (RSS)
 - X/Twitter (API - requires keys)
 - Stratechery (RSS)
 
-### Business/Finance
+### Business
 - Yahoo Finance (RSS)
 - CNBC (RSS)
 

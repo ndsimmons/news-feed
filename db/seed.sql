@@ -6,19 +6,19 @@ INSERT INTO users (id, username, email) VALUES
 
 -- Insert categories
 INSERT INTO categories (id, name, slug, description) VALUES 
-  (1, 'Tech/AI', 'tech-ai', 'Technology and Artificial Intelligence news'),
-  (2, 'Business/Finance', 'business-finance', 'Business and Finance news'),
+  (1, 'Tech', 'tech', 'Technology news'),
+  (2, 'Business', 'business', 'Business news'),
   (3, 'Sports', 'sports', 'Sports news and updates'),
   (4, 'Politics', 'politics', 'Political news and commentary');
 
 -- Insert sources
--- Tech/AI Sources
+-- Tech Sources
 INSERT INTO sources (name, url, category_id, fetch_method, config, active) VALUES 
   ('Techmeme', 'https://techmeme.com', 1, 'rss', '{"rss_url": "https://www.techmeme.com/feed.xml"}', 1),
   ('Stratechery', 'https://stratechery.com', 1, 'rss', '{"rss_url": "https://stratechery.com/feed/"}', 1),
   ('X (Tech)', 'https://x.com', 1, 'api', '{"type": "twitter", "lists": ["tech"], "keywords": ["AI", "ML", "tech"]}', 0);
 
--- Business/Finance Sources
+-- Business Sources
 INSERT INTO sources (name, url, category_id, fetch_method, config, active) VALUES 
   ('Yahoo Finance', 'https://finance.yahoo.com', 2, 'rss', '{"rss_url": "https://finance.yahoo.com/news/rssindex"}', 1),
   ('CNBC', 'https://cnbc.com', 2, 'rss', '{"rss_url": "https://www.cnbc.com/id/100003114/device/rss/rss.html"}', 1);
@@ -35,11 +35,11 @@ INSERT INTO sources (name, url, category_id, fetch_method, config, active) VALUE
 
 -- Initialize interest weights for default user (neutral starting weights)
 INSERT INTO interest_weights (user_id, category_id, source_id, weight) VALUES 
-  -- Tech/AI weights
+  -- Tech weights
   (1, 1, 1, 1.0), -- Techmeme
   (1, 1, 2, 1.0), -- Stratechery
   (1, 1, 3, 1.0), -- X (Tech)
-  -- Business/Finance weights
+  -- Business weights
   (1, 2, 4, 1.0), -- Yahoo Finance
   (1, 2, 5, 1.0), -- CNBC
   -- Sports weights

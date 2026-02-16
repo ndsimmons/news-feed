@@ -20,16 +20,16 @@
 ### Database Contents
 
 **Categories (4 total)**:
-1. Tech/AI
-2. Business/Finance
+1. Tech
+2. Business
 3. Sports
 4. Politics
 
 **Active Sources (4 total)**:
-1. Techmeme (RSS) - Tech/AI
-2. Stratechery (RSS) - Tech/AI
-3. Yahoo Finance (RSS) - Business/Finance
-4. CNBC (RSS) - Business/Finance
+1. Techmeme (RSS) - Tech
+2. Stratechery (RSS) - Tech
+3. Yahoo Finance (RSS) - Business
+4. CNBC (RSS) - Business
 
 **Inactive Sources** (require API keys):
 - X (Tech)

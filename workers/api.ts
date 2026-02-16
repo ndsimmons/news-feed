@@ -108,8 +108,8 @@ function calculateDirectContentScore(
 }
 
 // Default sources for new user signups. Sources NOT in this list get disabled (active=0).
-// Arts/Culture: 19,20,21,22,39,43 | Business: 5,10,12,16,17 | Politics: 14,15,23,36,38
-// Sports: 24,25,26,27,42 | Tech/AI: 1,11,13,18,40,41
+// Culture: 19,20,21,22,39,43 | Business: 5,10,12,16,17 | Politics: 14,15,23,36,38
+// Sports: 24,25,26,27,42 | Tech: 1,11,13,18,40,41
 const DEFAULT_SOURCE_IDS = [1, 5, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 36, 38, 39, 40, 41, 42, 43];
 
 interface Env {
@@ -168,6 +168,10 @@ export default {
 
       if (path === '/api/discover-source' && request.method === 'POST') {
         return await handleDiscoverSource(request, env, corsHeaders);
+      }
+
+      if (path === '/api/search-sources' && request.method === 'POST') {
+        return await handleSearchSources(request, env, corsHeaders);
       }
 
       if (path === '/api/auto-add-source' && request.method === 'POST') {
@@ -1094,7 +1098,7 @@ async function handleAddSource(
 
 /**
  * Auto-classify a source into a category based on name and URL keywords.
- * Falls back to Tech/AI (id 1) if no strong match.
+ * Falls back to Tech (id 1) if no strong match.
  */
 async function autoClassifyCategory(name: string, url: string, env: Env): Promise<number> {
   const text = `${name} ${url}`.toLowerCase();
@@ -1428,6 +1432,82 @@ async function handleDiscoverSource(
 async function addSuggestedCategory(responseData: any, env: Env): Promise<any> {
   const categoryId = await autoClassifyCategory(responseData.name || '', responseData.url || '', env);
   return { ...responseData, suggested_category_id: categoryId };
+}
+
+/**
+ * POST /api/search-sources - Search for news sources by keyword.
+ * Scrapes DuckDuckGo HTML results to find the top 3 matching news websites.
+ * Returns an array of { name, url, description } objects.
+ */
+async function handleSearchSources(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  try {
+    const { query } = await request.json() as { query: string };
+    if (!query || query.trim().length < 2) {
+      return new Response(JSON.stringify({ error: 'Search query required' }), {
+        status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Use Gemini to suggest 3 news websites for the given query
+    // Use gemini-2.0-flash (separate quota from 2.5-flash-lite used for summaries)
+    const geminiResponse = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${env.GOOGLE_AI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: `The user is searching for news sources to add to their RSS reader. Their search query is: "${query.trim()}"
+
+Suggest exactly 3 real, well-known news websites that best match this query. For each, provide the website name, homepage URL, and a one-sentence description of what they cover.
+
+Return ONLY a JSON array with exactly 3 objects, each having "name", "url", and "description" fields. No markdown, no explanation.
+
+Example: [{"name": "Reuters", "url": "https://www.reuters.com", "description": "Global news wire covering breaking news, business, markets, and world events."}]` }] }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 500 }
+        })
+      }
+    );
+
+    const geminiData = await geminiResponse.json() as any;
+    const responseText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+    // Parse the JSON array from Gemini's response
+    let results: Array<{ name: string; url: string; description: string }> = [];
+    try {
+      // Strip markdown code fences if present
+      const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      const parsed = JSON.parse(cleaned);
+      if (Array.isArray(parsed)) {
+        results = parsed.slice(0, 3).map((r: any) => ({
+          name: String(r.name || ''),
+          url: String(r.url || ''),
+          description: String(r.description || '')
+        })).filter((r: any) => r.name && r.url);
+      }
+    } catch (e) {
+      console.error('Failed to parse Gemini search results:', responseText);
+    }
+
+    if (results.length === 0 && geminiResponse.status === 429) {
+      return new Response(JSON.stringify({ error: 'Search is temporarily rate limited. Please try entering a URL directly, or try again in a minute.' }), {
+        status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    return new Response(JSON.stringify({ results }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+
+  } catch (error) {
+    console.error('Error searching sources:', error);
+    return new Response(JSON.stringify({ error: 'Search failed', _error: String(error) }), {
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
 }
 
 /**
