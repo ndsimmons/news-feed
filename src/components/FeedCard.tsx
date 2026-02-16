@@ -33,9 +33,42 @@ function decodeHtmlEntities(text: string): string {
    return decoded;
 }
 
-// Render markdown-formatted summary with support for **bold** syntax
+// Render markdown-formatted summary with support for **bold** and * bullet points
 function renderMarkdownSummary(text: string): React.ReactNode {
   if (!text) return null;
+  
+  const parts: React.ReactNode[] = [];
+  
+  // First, split by lines
+  const lines = text.split('\n');
+  
+  lines.forEach((line, lineIndex) => {
+    const trimmedLine = line.trim();
+    
+    // Check if line starts with * (bullet point)
+    if (trimmedLine.startsWith('*') && !trimmedLine.startsWith('**')) {
+      // This is a single-asterisk bullet point
+      const bulletText = trimmedLine.substring(1).trim();
+      parts.push(
+        <div key={`bullet-${lineIndex}`} style={{ marginLeft: '1.25rem', marginTop: '0.5rem' }}>
+          • {renderBoldText(bulletText)}
+        </div>
+      );
+    } else {
+      // Regular line with potential **bold** formatting
+      parts.push(renderBoldText(trimmedLine, lineIndex));
+      if (lineIndex < lines.length - 1) {
+        parts.push('\n');
+      }
+    }
+  });
+  
+  return parts.length > 0 ? parts : text;
+}
+
+// Helper to render bold text within a string
+function renderBoldText(text: string, key?: number | string): React.ReactNode {
+  if (!text) return text;
   
   const parts: React.ReactNode[] = [];
   let lastIndex = 0;
@@ -48,7 +81,7 @@ function renderMarkdownSummary(text: string): React.ReactNode {
       parts.push(text.substring(lastIndex, match.index));
     }
     // Add the bold text
-    parts.push(<strong key={`bold-${match.index}`}>{match[1]}</strong>);
+    parts.push(<strong key={`bold-${match.index}-${key}`}>{match[1]}</strong>);
     lastIndex = match.index + match[0].length;
   }
   
