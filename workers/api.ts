@@ -238,7 +238,7 @@ export default {
       }
 
       if (path === '/api/backfill-summaries' && request.method === 'POST') {
-        return await handleBackfillSummaries(request, env, corsHeaders);
+        return await handleBackfillSummaries(request, env, corsHeaders, ctx);
       }
 
       // TEST ENDPOINT - Auto login as test user 999 (ONLY for development/testing)
@@ -2801,11 +2801,13 @@ async function handleSaveArticle(
 
 /**
  * POST /api/backfill-summaries - Generate AI summaries for all saved articles that don't have one
+ * Returns immediately; processing happens in background batches
  */
 async function handleBackfillSummaries(
   request: Request,
   env: Env,
-  corsHeaders: Record<string, string>
+  corsHeaders: Record<string, string>,
+  ctx?: ExecutionContext
 ): Promise<Response> {
   try {
     // Clear all existing summaries and regenerate
@@ -2818,28 +2820,64 @@ async function handleBackfillSummaries(
     const items = result.results as Array<{ article_id: number; user_id: number }>;
     console.log(`Backfilling summaries for ${items.length} saved articles`);
 
-    let completed = 0;
-    let failed = 0;
-    // Process sequentially to avoid overwhelming Workers AI
-    for (const item of items) {
-      try {
-        await generateArticleSummary(item.article_id, item.user_id, env);
-        completed++;
-      } catch (err) {
-        console.error(`Failed to generate summary for article ${item.article_id}:`, err);
-        failed++;
-      }
-    }
-
-    return new Response(JSON.stringify({ success: true, total: items.length, completed, failed }), {
+    // Return immediately with batch info
+    const response = new Response(JSON.stringify({ 
+      success: true, 
+      total: items.length, 
+      message: 'Backfill started. Processing in background batches.' 
+    }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
+
+    // Process in background using waitUntil if available, otherwise fire-and-forget
+    if (ctx?.waitUntil) {
+      ctx.waitUntil(backfillInBatches(items, env));
+    } else {
+      // Fire-and-forget fallback
+      backfillInBatches(items, env).catch(err => 
+        console.error('Background backfill failed:', err)
+      );
+    }
+
+    return response;
   } catch (error) {
-    console.error('Error backfilling summaries:', error);
-    return new Response(JSON.stringify({ error: 'Backfill failed' }), {
+    console.error('Error starting backfill:', error);
+    return new Response(JSON.stringify({ error: 'Backfill failed to start' }), {
       status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   }
+}
+
+/**
+ * Process backfill in smaller batches with delays to avoid rate limiting
+ */
+async function backfillInBatches(
+  items: Array<{ article_id: number; user_id: number }>,
+  env: Env
+): Promise<void> {
+  const BATCH_SIZE = 3;
+  const DELAY_MS = 1000;
+  
+  for (let i = 0; i < items.length; i += BATCH_SIZE) {
+    const batch = items.slice(i, i + BATCH_SIZE);
+    console.log(`Backfill batch ${Math.floor(i / BATCH_SIZE) + 1}: processing ${batch.length} articles`);
+    
+    // Process batch in parallel
+    await Promise.all(
+      batch.map(item =>
+        generateArticleSummary(item.article_id, item.user_id, env).catch(err =>
+          console.error(`Failed to generate summary for article ${item.article_id}:`, err)
+        )
+      )
+    );
+    
+    // Delay between batches to avoid overwhelming the API
+    if (i + BATCH_SIZE < items.length) {
+      await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+    }
+  }
+  
+  console.log(`Backfill complete: processed ${items.length} articles`);
 }
 
 /**
@@ -2862,18 +2900,26 @@ async function generateArticleSummary(articleId: number, userId: number, env: En
        messages: [
          {
            role: 'system',
-           content: `You are a senior investigative data journalist—a hybrid of Axios's "Smart Brevity" and Stratechery's deep structural analysis. You ignore PR fluff to find the startling, hard data and strategic shifts hidden in news stories. Your tone is professional, intellectually curious, and strictly analytical.
+           content: `You are a senior investigative data journalist—a hybrid of Axios "Smart Brevity" and Stratechery structural analysis. You ignore PR fluff to find the startling, hard data and strategic shifts hidden in news stories. Your tone is professional, observant, and intellectually curious.
+
+Strict Grounding Rule: Use ONLY the facts, names, and titles provided in the text below. Do not use your internal knowledge to correct or supplement names (e.g., if the text says "Kennedy," do not use "Xavier Becerra"). If a specific name or data point is in the text, that is your only truth.
 
 Task:
-Analyze the provided news article and provide a high-impact summary (max 150 tokens) using the following structure:
+Analyze the provided news article and provide a high-impact summary following this exact structure:
 
-The Lead: A 1-2 sentence executive summary of the primary event.
+The Lead: Start with a 1-2 sentence executive summary of the primary event. This entire section must be in bold.
 
-The Deep Analysis (Strategic "Easter Eggs"): Identify 2-3 non-obvious details that reveal the underlying business strategy or a hidden shift in the market. Focus on the incentives or the friction behind the headline.
+The Strategic Analysis: On a new line (not bolded), identify 2-3 non-obvious details or "Easter eggs" that reveal the underlying business strategy or hidden market shifts. Focus on the incentives or the mechanics behind the headline.
 
-Hard Data: Every point must be anchored by a number (e.g., $ amounts, percentages, headcount, or timeframes). Avoid "vague-speak" like massive, significant, or unprecedented.
+Key Data Points: On a new line, write "Key Data Points" and follow it with a bulleted list. Each bullet must contain a specific number, percentage, or dollar amount.
 
-Voice Guidelines: Use active verbs. Do not use AI-isms like "The article highlights" or "In conclusion." Start immediately with the facts.`
+Constraint - Length & Tone:
+
+Limit: 150 tokens. Do not exceed this. If you run out of space, edit for brevity; never stop mid-sentence.
+
+Avoid "vague-speak" (e.g., massive, significant). Use hard numbers only.
+
+No "AI-isms" (e.g., "The article highlights," "This summary covers"). Start immediately with the facts.`
          },
          {
            role: 'user',
