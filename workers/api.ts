@@ -1295,7 +1295,7 @@ async function handleDiscoverSource(
           const feedText = await feedRes.text();
           if (feedText.includes('<rss') || feedText.includes('<feed') || feedText.includes('<channel')) {
             const itemCount = (feedText.match(/<item[\s>]/gi) || feedText.match(/<entry[\s>]/gi) || []).length;
-            return new Response(JSON.stringify({
+            const linkTagResult = await addSuggestedCategory({
               success: true,
               name: siteName,
               url: origin,
@@ -1303,7 +1303,8 @@ async function handleDiscoverSource(
               config: { rss_url: feedUrl },
               articles_found: itemCount,
               discovery_method: 'link_tag'
-            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+            }, env);
+            return new Response(JSON.stringify(linkTagResult), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
           }
         } catch (e) { /* try next */ }
       }
@@ -1325,7 +1326,7 @@ async function handleDiscoverSource(
           const feedText = await feedRes.text();
           if (feedText.includes('<rss') || feedText.includes('<feed') || feedText.includes('<channel')) {
             const itemCount = (feedText.match(/<item[\s>]/gi) || feedText.match(/<entry[\s>]/gi) || []).length;
-            return new Response(JSON.stringify({
+            const commonPathResult = await addSuggestedCategory({
               success: true,
               name: siteName,
               url: origin,
@@ -1333,7 +1334,8 @@ async function handleDiscoverSource(
               config: { rss_url: feedUrl },
               articles_found: itemCount,
               discovery_method: 'common_path'
-            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+            }, env);
+            return new Response(JSON.stringify(commonPathResult), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
           }
         }
       } catch (e) { /* try next */ }
@@ -1356,7 +1358,7 @@ async function handleDiscoverSource(
             return p !== '/' && p.split('/').filter(Boolean).length >= 2;
           });
           
-          return new Response(JSON.stringify({
+          const sitemapResult = await addSuggestedCategory({
             success: true,
             name: siteName,
             url: origin,
@@ -1368,7 +1370,8 @@ async function handleDiscoverSource(
             },
             articles_found: articleUrls.length,
             discovery_method: 'sitemap'
-          }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+          }, env);
+          return new Response(JSON.stringify(sitemapResult), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
         }
       }
     } catch (e) { /* try next */ }
@@ -1390,7 +1393,7 @@ async function handleDiscoverSource(
     }
 
     if (articleLinks.length > 0) {
-      return new Response(JSON.stringify({
+      const scrapeResult = await addSuggestedCategory({
         success: true,
         name: siteName,
         url: origin,
@@ -1401,7 +1404,8 @@ async function handleDiscoverSource(
         },
         articles_found: articleLinks.length,
         discovery_method: 'scrape'
-      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }, env);
+      return new Response(JSON.stringify(scrapeResult), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
     return new Response(JSON.stringify({
@@ -1415,6 +1419,15 @@ async function handleDiscoverSource(
       status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   }
+}
+
+/**
+ * Helper: Inject suggested_category_id into a discover-source success response.
+ * Called before returning each success response in handleDiscoverSource.
+ */
+async function addSuggestedCategory(responseData: any, env: Env): Promise<any> {
+  const categoryId = await autoClassifyCategory(responseData.name || '', responseData.url || '', env);
+  return { ...responseData, suggested_category_id: categoryId };
 }
 
 /**
@@ -3261,8 +3274,8 @@ Task: Analyze the provided news article. Return a summary in EXACTLY this two-pa
 PART 1 — EXECUTIVE SUMMARY (1-2 sentences, plain text, no bullet):
 State the primary event or finding. No labels, no headers. Start immediately with the facts.
 
-PART 2 — SUPPORTING EVIDENCE (bullet points):
-Each bullet MUST start with "* " on a new line. Each bullet is one new fact, number, or piece of evidence that supports the thesis above. No bullet should repeat information from Part 1.
+PART 2 — SUPPORTING EVIDENCE (exactly 2-4 bullet points, NEVER fewer than 2):
+Each bullet MUST start with "* " on a new line. Each bullet is one new fact, number, or piece of evidence that supports the thesis above. No bullet should repeat information from Part 1. You MUST include at least 2 bullets. If the article is short, extract 2 distinct facts. One bullet is NEVER acceptable.
 
 Anchor bullets in hard numbers, percentages, multipliers (3x), or dollar amounts whenever the text provides them.
 
@@ -3273,7 +3286,7 @@ The FDA approved a new drug for diabetes treatment, making it the first oral GLP
 * The drug will be available in pharmacies by Q3 2026.
 
 Constraints:
-- STRICTLY under 150 tokens. Aim for 60-90 words total. Never stop mid-sentence.
+- Aim for 80-120 words total. Never stop mid-sentence. Do NOT sacrifice bullet count to save tokens.
 - ALWAYS use the two-part structure: plain summary first, then "* " bullets.
 - Avoid vague-speak (e.g., massive, significant). Let the numbers talk.
 - No AI-isms (e.g., "The article highlights," "In conclusion").`;

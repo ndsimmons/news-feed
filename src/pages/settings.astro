@@ -116,6 +116,15 @@ import Layout from '../layouts/Layout.astro';
                   id="source-name-input" 
                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 mb-4"
                 />
+                <label for="source-category-select" class="block text-sm font-medium text-gray-700 mb-2">
+                  Category
+                </label>
+                <select
+                  id="source-category-select"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 mb-4 bg-white"
+                >
+                  <option value="">Loading categories...</option>
+                </select>
                 <div class="flex gap-3 justify-end">
                   <button id="back-add-source" class="px-4 py-2 text-gray-600 hover:text-gray-800">Back</button>
                   <button id="confirm-add-source" class="px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700">
@@ -998,10 +1007,27 @@ import Layout from '../layouts/Layout.astro';
   const step2 = document.getElementById('add-source-step2');
   const discoveryResult = document.getElementById('discovery-result');
   const sourceNameInput = document.getElementById('source-name-input') as HTMLInputElement;
+  const sourceCategorySelect = document.getElementById('source-category-select') as HTMLSelectElement;
   const backBtn = document.getElementById('back-add-source');
   const confirmBtn = document.getElementById('confirm-add-source');
 
   let discoveredSource: any = null;
+
+  // Populate category dropdown
+  async function loadCategoryOptions() {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/categories`);
+      const categories = await res.json();
+      if (sourceCategorySelect && Array.isArray(categories)) {
+        sourceCategorySelect.innerHTML = categories.map((c: any) =>
+          `<option value="${c.id}">${c.name}</option>`
+        ).join('');
+      }
+    } catch (e) {
+      console.error('Failed to load categories', e);
+    }
+  }
+  loadCategoryOptions();
 
 
 
@@ -1063,6 +1089,10 @@ import Layout from '../layouts/Layout.astro';
           `;
         }
         if (sourceNameInput) sourceNameInput.value = data.name || '';
+        // Pre-select the auto-classified category
+        if (sourceCategorySelect && data.suggested_category_id) {
+          sourceCategorySelect.value = String(data.suggested_category_id);
+        }
       } else {
         if (discoverStatus) {
           discoverStatus.textContent = data.error || 'Could not find any feeds or articles at this URL';
@@ -1107,6 +1137,7 @@ import Layout from '../layouts/Layout.astro';
         body: JSON.stringify({
           name,
           url: discoveredSource.url,
+          category_id: sourceCategorySelect ? parseInt(sourceCategorySelect.value) : undefined,
           fetch_method: discoveredSource.fetch_method,
           config: JSON.stringify(discoveredSource.config),
           active: 1
