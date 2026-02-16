@@ -157,32 +157,47 @@ async function fetchFromSource(source: Source, env: Env): Promise<number> {
     }
     
     // Fetch full article text for newly inserted articles that don't have content yet
-    const needsContent = newArticles.filter(({ article }) => {
-      const contentLen = article.content?.length || 0;
-      return contentLen < 200 && article.url;
-    });
-    
-    if (needsContent.length > 0) {
-      console.log(`Fetching full text for ${needsContent.length} new articles from ${source.name}`);
+    // Skip podcast sources (spotify_url) — no article text to extract
+    const sourceFlags = source as any;
+    if (sourceFlags.spotify_url) {
+      console.log(`Skipping content fetch for podcast source: ${source.name}`);
+    } else {
+      const needsContent = newArticles.filter(({ article }) => {
+        const contentLen = article.content?.length || 0;
+        return contentLen < 200 && article.url;
+      });
       
-      // Fetch in parallel batches of 5
-      const BATCH_SIZE = 5;
-      for (let i = 0; i < needsContent.length; i += BATCH_SIZE) {
-        const batch = needsContent.slice(i, i + BATCH_SIZE);
-        const results = await Promise.allSettled(
-          batch.map(({ article }) => extractArticleText(article.url!))
-        );
+      if (needsContent.length > 0) {
+        // For paywalled sources (use_archive=1, e.g. NYT/WSJ), fetch via archive.is
+        // This mirrors the click-through logic in FeedCard.tsx
+        const useArchive = !!(sourceFlags.use_archive);
         
-        // Update articles that got content
-        for (let j = 0; j < results.length; j++) {
-          const result = results[j];
-          if (result.status === 'fulfilled' && result.value) {
-            try {
-              await env.DB.prepare(
-                'UPDATE articles SET content = ? WHERE id = ?'
-              ).bind(result.value, batch[j].articleId).run();
-            } catch (err) {
-              console.error(`Failed to update content for article ${batch[j].articleId}:`, err);
+        console.log(`Fetching full text for ${needsContent.length} new articles from ${source.name}${useArchive ? ' (via archive.is)' : ''}`);
+        
+        // Fetch in parallel batches of 5
+        const BATCH_SIZE = 5;
+        for (let i = 0; i < needsContent.length; i += BATCH_SIZE) {
+          const batch = needsContent.slice(i, i + BATCH_SIZE);
+          const results = await Promise.allSettled(
+            batch.map(({ article }) => {
+              const fetchUrl = useArchive
+                ? `https://archive.is/newest/${article.url!.split('?')[0]}`
+                : article.url!;
+              return extractArticleText(fetchUrl);
+            })
+          );
+          
+          // Update articles that got content
+          for (let j = 0; j < results.length; j++) {
+            const result = results[j];
+            if (result.status === 'fulfilled' && result.value) {
+              try {
+                await env.DB.prepare(
+                  'UPDATE articles SET content = ? WHERE id = ?'
+                ).bind(result.value, batch[j].articleId).run();
+              } catch (err) {
+                console.error(`Failed to update content for article ${batch[j].articleId}:`, err);
+              }
             }
           }
         }

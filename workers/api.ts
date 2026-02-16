@@ -2858,16 +2858,20 @@ async function handleBackfillContent(
   ctx: ExecutionContext
 ): Promise<Response> {
   try {
-    // Get articles from last 7 days that have no content
+    // Get articles from last 7 days that have no content, joined with source flags
+    // so we can use archive.is for paywalled sources and skip podcasts
     const result = await env.DB.prepare(`
-      SELECT id, url FROM articles 
-      WHERE (content IS NULL OR content = '') 
-      AND published_at > datetime('now', '-7 days')
-      ORDER BY published_at DESC
+      SELECT a.id, a.url, s.use_archive, s.spotify_url
+      FROM articles a
+      LEFT JOIN sources s ON a.source_id = s.id
+      WHERE (a.content IS NULL OR a.content = '') 
+      AND a.published_at > datetime('now', '-7 days')
+      AND (s.spotify_url IS NULL OR s.spotify_url = '')
+      ORDER BY a.published_at DESC
       LIMIT 200
     `).all();
 
-    const items = result.results as Array<{ id: number; url: string }>;
+    const items = result.results as Array<{ id: number; url: string; use_archive: number | null; spotify_url: string | null }>;
     console.log(`Content backfill: ${items.length} articles need content`);
 
     const response = new Response(JSON.stringify({ 
@@ -2894,9 +2898,10 @@ async function handleBackfillContent(
 /**
  * Fetch article text in parallel batches. Updates articles.content and clears ai_summary
  * so it regenerates from full text on next feed load.
+ * Uses archive.is for paywalled sources (use_archive=1) — mirrors FeedCard click-through logic.
  */
 async function backfillContentInBatches(
-  items: Array<{ id: number; url: string }>,
+  items: Array<{ id: number; url: string; use_archive: number | null }>,
   env: Env
 ): Promise<void> {
   const BATCH_SIZE = 5;
@@ -2909,7 +2914,14 @@ async function backfillContentInBatches(
     const batch = items.slice(i, i + BATCH_SIZE);
 
     const results = await Promise.allSettled(
-      batch.map(item => fetchArticleText(item.url))
+      batch.map(item => {
+        // For paywalled sources (NYT, WSJ), fetch via archive.is
+        // Same logic as FeedCard.tsx: archive.is/newest/{url_without_querystring}
+        const fetchUrl = item.use_archive
+          ? `https://archive.is/newest/${item.url.split('?')[0]}`
+          : item.url;
+        return fetchArticleText(fetchUrl);
+      })
     );
 
     for (let j = 0; j < results.length; j++) {
