@@ -595,7 +595,7 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
             </span>
           </div>
           
-          {(isSavedView ? aiSummary : (aiSummary || article.summary)) && (
+          {(aiSummary || article.summary) && (
             <div 
               className="cursor-pointer hover:bg-gray-50 -mx-1 px-1 py-1 rounded transition-colors"
               onClick={(e) => {
@@ -612,7 +612,7 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
                   overflow: isSummaryExpanded ? 'visible' : 'hidden'
                 }}
               >
-                {isSavedView ? (aiSummary || 'Generating AI summary...') : (aiSummary ? aiSummary : decodeHtmlEntities(article.summary || ''))}
+                {aiSummary || (isSavedView ? 'Generating AI summary...' : decodeHtmlEntities(article.summary || ''))}
               </p>
             </div>
           )}

@@ -397,11 +397,12 @@ async function handleGetFeed(
   //   2. Page 1 only: also suppress articles viewed in the last 30 minutes
   //      (so returning to the feed shows fresh content, not stuff you just scrolled past)
   let query = `
-    SELECT a.*, s.name as source_name, s.spotify_url as spotify_url, s.use_archive as use_archive, s.is_aggregator as is_aggregator, c.name as category_name, c.slug as category_slug
+    SELECT a.*, s.name as source_name, s.spotify_url as spotify_url, s.use_archive as use_archive, s.is_aggregator as is_aggregator, c.name as category_name, c.slug as category_slug, sa.ai_summary
     FROM articles a
     LEFT JOIN sources s ON a.source_id = s.id
     LEFT JOIN categories c ON a.category_id = c.id
     LEFT JOIN user_source_preferences usp ON a.source_id = usp.source_id AND usp.user_id = ?
+    LEFT JOIN saved_articles sa ON a.id = sa.article_id AND sa.user_id = ?
     WHERE a.published_at > datetime('now', '-7 days')
     AND NOT EXISTS (
       SELECT 1 FROM article_impressions ai
@@ -424,7 +425,7 @@ async function handleGetFeed(
     AND (usp.active IS NULL OR usp.active = 1)
   `;
 
-  const params: any[] = [userId, userId, userId, userId]; // userId for source prefs, impression filter, downvote filter, saved filter
+  const params: any[] = [userId, userId, userId, userId, userId]; // userId for source prefs, saved_articles join, impression filter, downvote filter, saved filter
 
   // Page 1 only: also suppress articles viewed in the last 30 minutes
   if (!isLoggedOut && offset === 0) {
