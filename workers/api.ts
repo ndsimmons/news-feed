@@ -2908,15 +2908,15 @@ Task: Analyze the provided news article and provide a high-impact summary follow
 
 Start with a 1-2 sentence executive summary of the primary event. This entire section must be in bold.
 
-On a new line (not bolded), identify 2-3 non-obvious details or "Easter eggs" that reveal the underlying thesis of the article. Focus on the impact of the thesis of the article
-
-Key Data Points: On a new line, write "Key Data Points" and follow it with a bulleted list. Each bullet should focus on a key takeaways that is data driven or factual.  If none exist then leave this out.
+Then (not bolded), identify 2-3 key takeaways that are thought provoking 
 
 Constraint - Length & Tone:
 
 Limit: 150 tokens. Do not exceed this. If you run out of space, edit for brevity; never stop mid-sentence.
 
 Avoid "vague-speak" (e.g., massive, significant). Use hard numbers only.
+
+Don't repeat any facts or point (e.g. if you said a company plans to deploy 20k+ GPUs in one section don't say it again in the next section)
 
 No "AI-isms" (e.g., "The article highlights," "This summary covers"). Start immediately with the facts.`
          },
