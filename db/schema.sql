@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS articles (
   image_url TEXT,
   author TEXT,
   content TEXT, -- Full article text if available
+  ai_summary TEXT, -- AI-generated summary (Gemini)
   FOREIGN KEY (source_id) REFERENCES sources(id),
   FOREIGN KEY (category_id) REFERENCES categories(id)
 );

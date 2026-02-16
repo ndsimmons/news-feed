@@ -130,17 +130,20 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
 
   const cardRef = useRef<HTMLElement>(null);
 
-  // For saved view: poll for AI summary if not yet available
+  // Poll for AI summary if not yet available (saved view or feed view)
+  // Summaries are generated in the background via waitUntil, so this polls
+  // until one becomes available (e.g., after saving an article or first feed load)
   useEffect(() => {
-    if (!isSavedView || aiSummary || !userId) return;
+    if (aiSummary) return; // Already have a summary
+    if (!isSavedView && !isAuthenticated) return; // Don't poll for logged-out feed
     let cancelled = false;
     let attempts = 0;
     const poll = async () => {
       while (!cancelled && attempts < 10) {
         attempts++;
-        await new Promise(r => setTimeout(r, 2000)); // wait 2s between polls
+        await new Promise(r => setTimeout(r, 3000)); // wait 3s between polls
         try {
-          const res = await fetch(`${API_BASE_URL}/api/saved/summary?userId=${userId}&articleId=${article.id}`);
+          const res = await fetch(`${API_BASE_URL}/api/saved/summary?articleId=${article.id}`);
           if (res.ok) {
             const data = await res.json();
             if (data.ai_summary) {
@@ -153,7 +156,7 @@ export default function FeedCard({ article, onVote, isAuthenticated = false, use
     };
     poll();
     return () => { cancelled = true; };
-  }, [isSavedView, aiSummary, userId, article.id]);
+  }, [aiSummary, isSavedView, isAuthenticated, article.id]);
 
   // Debug: Log if we're missing score
   useEffect(() => {

@@ -138,7 +138,7 @@ export default {
     try {
       // Route handlers
       if (path === '/api/feed' && request.method === 'GET') {
-        return await handleGetFeed(request, env, corsHeaders);
+        return await handleGetFeed(request, env, corsHeaders, ctx);
       }
 
       if (path === '/api/vote' && request.method === 'POST') {
@@ -275,11 +275,10 @@ export default {
 
       if (path === '/api/saved/summary' && request.method === 'GET') {
         const summaryUrl = new URL(request.url);
-        const sUserId = parseInt(summaryUrl.searchParams.get('userId') || '0');
         const sArticleId = parseInt(summaryUrl.searchParams.get('articleId') || '0');
         const row = await env.DB.prepare(
-          'SELECT ai_summary FROM saved_articles WHERE user_id = ? AND article_id = ?'
-        ).bind(sUserId, sArticleId).first();
+          'SELECT ai_summary FROM articles WHERE id = ?'
+        ).bind(sArticleId).first();
         return new Response(JSON.stringify({ ai_summary: row?.ai_summary || null }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
@@ -305,12 +304,49 @@ export default {
 };
 
 /**
+ * Trigger batch AI summary generation for feed articles that don't have summaries yet.
+ * First batch: 5 articles (fast, for immediate display on reload).
+ * Second batch: remaining articles (up to 20 more).
+ * All processing happens in the background via waitUntil.
+ */
+function triggerBatchSummaries(articles: any[], env: Env, ctx: ExecutionContext): void {
+  const needsSummary = articles.filter((a: any) => !a.ai_summary);
+  if (needsSummary.length === 0) return;
+
+  console.log(`Feed batch summaries: ${needsSummary.length} articles need summaries`);
+
+  // First batch: 5 articles (fast)
+  const firstBatch = needsSummary.slice(0, 5);
+  // Second batch: next 20 articles
+  const secondBatch = needsSummary.slice(5, 25);
+
+  ctx.waitUntil(
+    (async () => {
+      // Fire first batch immediately
+      await generateBatchSummaries(
+        firstBatch.map((a: any) => ({ id: a.id, title: a.title, summary: a.summary, content: a.content })),
+        env
+      );
+
+      // Fire second batch if there are more
+      if (secondBatch.length > 0) {
+        await generateBatchSummaries(
+          secondBatch.map((a: any) => ({ id: a.id, title: a.title, summary: a.summary, content: a.content })),
+          env
+        );
+      }
+    })()
+  );
+}
+
+/**
  * GET /api/feed - Get personalized article feed with embedding-based content scoring
  */
 async function handleGetFeed(
   request: Request,
   env: Env,
-  corsHeaders: Record<string, string>
+  corsHeaders: Record<string, string>,
+  ctx: ExecutionContext
 ): Promise<Response> {
   const url = new URL(request.url);
   const limit = parseInt(url.searchParams.get('limit') || '20');
@@ -398,12 +434,11 @@ async function handleGetFeed(
   //   2. Page 1 only: also suppress articles viewed in the last 30 minutes
   //      (so returning to the feed shows fresh content, not stuff you just scrolled past)
   let query = `
-    SELECT a.*, s.name as source_name, s.spotify_url as spotify_url, s.use_archive as use_archive, s.is_aggregator as is_aggregator, c.name as category_name, c.slug as category_slug, sa.ai_summary
+    SELECT a.*, s.name as source_name, s.spotify_url as spotify_url, s.use_archive as use_archive, s.is_aggregator as is_aggregator, c.name as category_name, c.slug as category_slug
     FROM articles a
     LEFT JOIN sources s ON a.source_id = s.id
     LEFT JOIN categories c ON a.category_id = c.id
     LEFT JOIN user_source_preferences usp ON a.source_id = usp.source_id AND usp.user_id = ?
-    LEFT JOIN saved_articles sa ON a.id = sa.article_id AND sa.user_id = ?
     WHERE a.published_at > datetime('now', '-7 days')
     AND NOT EXISTS (
       SELECT 1 FROM article_impressions ai
@@ -426,7 +461,7 @@ async function handleGetFeed(
     AND (usp.active IS NULL OR usp.active = 1)
   `;
 
-  const params: any[] = [userId, userId, userId, userId, userId]; // userId for source prefs, saved_articles join, impression filter, downvote filter, saved filter
+  const params: any[] = [userId, userId, userId, userId]; // userId for source prefs, impression filter, downvote filter, saved filter
 
   // Page 1 only: also suppress articles viewed in the last 30 minutes
   if (!isLoggedOut && offset === 0) {
@@ -629,6 +664,9 @@ async function handleGetFeed(
       console.log(`📤 API Response - First article: id=${first.id}, score=${first.score}, adjustedScore=${first.adjustedScore}`);
     }
     
+    // Trigger batch AI summary generation for articles missing summaries
+    triggerBatchSummaries(enrichedArticles, env, ctx);
+
     const response: FeedResponse = {
       articles: enrichedArticles,
       total: normalizedArticles.length,
@@ -691,6 +729,9 @@ async function handleGetFeed(
       console.log(`📤 API Response - First article: id=${first.id}, score=${first.score}, adjustedScore=${first.adjustedScore}`);
     }
     
+    // Trigger batch AI summary generation for articles missing summaries
+    triggerBatchSummaries(enrichedArticles, env, ctx);
+
     const response: FeedResponse = {
       articles: enrichedArticles,
       total: normalizedArticles.length,
@@ -741,6 +782,9 @@ async function handleGetFeed(
       console.log(`📤 API Response - First article: id=${first.id}, score=${first.score}, adjustedScore=${first.adjustedScore}`);
     }
     
+    // Trigger batch AI summary generation for articles missing summaries
+    triggerBatchSummaries(enrichedArticles, env, ctx);
+
     const response: FeedResponse = {
       articles: enrichedArticles,
       total: normalizedArticles.length,
@@ -2682,7 +2726,6 @@ async function handleGetSavedArticles(
         c.name as category_name,
         c.slug as category_slug,
         sa.saved_at,
-        sa.ai_summary,
         v.vote as userVote
       FROM saved_articles sa
       JOIN articles a ON sa.article_id = a.id
@@ -2694,20 +2737,14 @@ async function handleGetSavedArticles(
       LIMIT ? OFFSET ?
     `).bind(userId, userId, limit, offset).all();
 
-    // Trigger AI summary generation for any saved articles without summaries
-    // Uses waitUntil to ensure generation completes after response is sent
-    const articlesWithoutSummaries = (result.results as any[]).filter(a => !a.ai_summary);
+    // Trigger batch AI summary generation for saved articles without summaries
+    const articlesWithoutSummaries = (result.results as any[]).filter((a: any) => !a.ai_summary);
     if (articlesWithoutSummaries.length > 0) {
       ctx.waitUntil(
-        (async () => {
-          for (const article of articlesWithoutSummaries) {
-            try {
-              await generateArticleSummary(article.id, userId, env);
-            } catch (err) {
-              console.error(`Error generating summary for article ${article.id}:`, err);
-            }
-          }
-        })()
+        generateBatchSummaries(
+          articlesWithoutSummaries.map((a: any) => ({ id: a.id, title: a.title, summary: a.summary, content: a.content })),
+          env
+        )
       );
     }
 
@@ -2780,13 +2817,18 @@ async function handleSaveArticle(
       `).bind(userId, article.source_id).run();
     }
 
-    // Generate AI summary in the background using waitUntil
-    // This ensures the summary generation completes even after the response is sent
-    ctx.waitUntil(
-      generateArticleSummary(articleId, userId, env).catch(err =>
-        console.error('Error generating summary:', err)
-      )
-    );
+    // Generate AI summary in the background if the article doesn't have one yet
+    const existingSummary = await env.DB.prepare(
+      'SELECT ai_summary FROM articles WHERE id = ?'
+    ).bind(articleId).first() as { ai_summary: string | null } | null;
+
+    if (!existingSummary?.ai_summary) {
+      ctx.waitUntil(
+        generateSingleSummary(articleId, env).catch(err =>
+          console.error('Error generating summary:', err)
+        )
+      );
+    }
 
     return new Response(JSON.stringify({ success: true }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -2811,15 +2853,16 @@ async function handleBackfillSummaries(
   ctx?: ExecutionContext
 ): Promise<Response> {
   try {
-    // Clear all existing summaries and regenerate
-    await env.DB.prepare('UPDATE saved_articles SET ai_summary = NULL').run();
-    
+    // Find all articles that don't have an AI summary yet
     const result = await env.DB.prepare(
-      'SELECT article_id, user_id FROM saved_articles WHERE ai_summary IS NULL'
+      `SELECT id, title, summary, content FROM articles 
+       WHERE ai_summary IS NULL 
+       AND published_at > datetime('now', '-7 days')
+       ORDER BY published_at DESC`
     ).all();
 
-    const items = result.results as Array<{ article_id: number; user_id: number }>;
-    console.log(`Backfilling summaries for ${items.length} saved articles`);
+    const items = result.results as Array<{ id: number; title: string; summary: string | null; content: string | null }>;
+    console.log(`Backfilling summaries for ${items.length} articles`);
 
     // Return immediately with batch info
     const response = new Response(JSON.stringify({ 
@@ -2850,53 +2893,44 @@ async function handleBackfillSummaries(
 }
 
 /**
- * Process backfill in smaller batches with delays to avoid rate limiting
+ * Process backfill in smaller batches with delays to avoid rate limiting.
+ * Uses generateBatchSummaries to process 10 articles per Gemini API call.
  */
 async function backfillInBatches(
-  items: Array<{ article_id: number; user_id: number }>,
+  items: Array<{ id: number; title: string; summary: string | null; content: string | null }>,
   env: Env
 ): Promise<void> {
-  // Gemini 2.0 Flash free tier: 15 requests/minute, 1500 requests/day
-  // Process sequentially with 5 second delays to stay well under rate limit
+  // Gemini 2.5 Flash Lite free tier: 30 req/min, 1000 req/day
+  // Process in chunks of 10 articles per API call with 5s delay between chunks
+  const CHUNK_SIZE = 10;
   const DELAY_MS = 5000;
   
-  console.log(`Backfill started: processing ${items.length} articles sequentially (2.5s delay between each)`);
+  console.log(`Backfill started: processing ${items.length} articles in chunks of ${CHUNK_SIZE}`);
   
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    console.log(`Backfill progress: ${i + 1}/${items.length} - Article ${item.article_id}`);
+  for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+    const chunk = items.slice(i, i + CHUNK_SIZE);
+    const chunkNum = Math.floor(i / CHUNK_SIZE) + 1;
+    const totalChunks = Math.ceil(items.length / CHUNK_SIZE);
+    
+    console.log(`Backfill progress: chunk ${chunkNum}/${totalChunks} (${chunk.length} articles)`);
     
     try {
-      await generateArticleSummary(item.article_id, item.user_id, env);
+      await generateBatchSummaries(chunk, env);
     } catch (err) {
-      console.error(`Failed to generate summary for article ${item.article_id}:`, err);
+      console.error(`Failed to generate summaries for chunk ${chunkNum}:`, err);
     }
     
-    // Delay between requests to respect Gemini rate limit
-    if (i < items.length - 1) {
+    // Delay between chunks to respect Gemini rate limit
+    if (i + CHUNK_SIZE < items.length) {
       await new Promise(resolve => setTimeout(resolve, DELAY_MS));
     }
   }
   
-  console.log(`Backfill complete: processed ${items.length} articles`);
+  console.log(`Backfill complete: processed ${items.length} articles in ${Math.ceil(items.length / CHUNK_SIZE)} chunks`);
 }
 
-/**
- * Generate a concise AI summary for a saved article using Google Gemini 3 Flash.
- * Always generates a fresh summary focused on key insights, facts, and numbers.
- * Returns the generated summary.
- */
-async function generateArticleSummary(articleId: number, userId: number, env: Env): Promise<string | null> {
-  const article = await env.DB.prepare(
-    'SELECT title, summary, content FROM articles WHERE id = ?'
-  ).bind(articleId).first() as { title: string; summary: string | null; content: string | null } | null;
-
-  if (!article) return null;
-
-  const inputText = article.content || article.summary || article.title;
-  let aiSummary: string;
-
-  const systemPrompt = `You are a senior investigative data journalist—a hybrid of Axios "Smart Brevity" and Stratechery structural analysis. You ignore PR fluff to find the startling, hard data and strategic shifts hidden in news stories.
+/** Shared system prompt for all AI summary generation */
+const AI_SUMMARY_SYSTEM_PROMPT = `You are a senior investigative data journalist—a hybrid of Axios "Smart Brevity" and Stratechery structural analysis. You ignore PR fluff to find the startling, hard data and strategic shifts hidden in news stories.
 
 Strict Grounding Rule: Use ONLY the facts, names, and titles provided in the text below. Do not use your internal knowledge to correct or supplement names (e.g., if the text says "Kennedy," do not use "Xavier Becerra"). If a specific name or data point is in the text, that is your only truth.
 
@@ -2920,10 +2954,35 @@ Avoid "vague-speak" (e.g., massive, significant). Let the numbers do the talking
 
 No "AI-isms" (e.g., "The article highlights," "In conclusion"). Start immediately with the facts.`;
 
-  const userPrompt = `Title: ${article.title}\n\nText: ${inputText.substring(0, 2000)}`;
+/**
+ * Generate AI summaries for a batch of articles in a single Gemini API call.
+ * Sends multiple articles, receives JSON-keyed summaries, writes each to articles.ai_summary.
+ */
+async function generateBatchSummaries(
+  articles: Array<{ id: number; title: string; summary: string | null; content: string | null }>,
+  env: Env
+): Promise<void> {
+  if (articles.length === 0) return;
+
+  console.log(`Batch summary: generating for ${articles.length} articles in a single Gemini call`);
+
+  // Build the user prompt with all articles
+  const articleEntries = articles.map(a => {
+    const text = a.content || a.summary || a.title;
+    return `[ARTICLE_ID: ${a.id}]\nTitle: ${a.title}\nText: ${text.substring(0, 1500)}`;
+  }).join('\n\n---\n\n');
+
+  const batchSystemPrompt = AI_SUMMARY_SYSTEM_PROMPT + `
+
+BATCH MODE: You will receive multiple articles separated by "---". For each article, generate a summary following the format above.
+
+Return your response as valid JSON: an object where each key is the article ID (as a string) and each value is the summary text. Example:
+{"12345": "Summary for article 12345...", "67890": "Summary for article 67890..."}
+
+Return ONLY the JSON object. No markdown code fences, no explanation.`;
 
   const MAX_RETRIES = 3;
-  
+
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const geminiResponse = await fetch(
@@ -2932,20 +2991,20 @@ No "AI-isms" (e.g., "The article highlights," "In conclusion"). Start immediatel
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            system_instruction: { parts: [{ text: systemPrompt }] },
-            contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+            system_instruction: { parts: [{ text: batchSystemPrompt }] },
+            contents: [{ role: 'user', parts: [{ text: articleEntries }] }],
             generationConfig: {
-              maxOutputTokens: 500,
-              temperature: 0.7
+              maxOutputTokens: articles.length * 200, // ~200 tokens per summary
+              temperature: 0.7,
+              responseMimeType: 'application/json'
             }
           })
         }
       );
 
       if (geminiResponse.status === 429) {
-        // Rate limited — wait and retry
-        const retryDelay = attempt * 10000; // 10s, 20s, 30s
-        console.log(`Article ${articleId}: Rate limited (attempt ${attempt}/${MAX_RETRIES}), retrying in ${retryDelay / 1000}s...`);
+        const retryDelay = attempt * 10000;
+        console.log(`Batch summary: Rate limited (attempt ${attempt}/${MAX_RETRIES}), retrying in ${retryDelay / 1000}s...`);
         await new Promise(resolve => setTimeout(resolve, retryDelay));
         continue;
       }
@@ -2956,30 +3015,69 @@ No "AI-isms" (e.g., "The article highlights," "In conclusion"). Start immediatel
       }
 
       const geminiData = await geminiResponse.json() as any;
-      const text = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-      
-      if (!text) {
-        console.error(`Article ${articleId}: Gemini returned empty text. Response:`, JSON.stringify(geminiData).substring(0, 500));
-        aiSummary = article.title;
-      } else {
-        aiSummary = text;
-        console.log(`Article ${articleId}: Gemini generated summary (${aiSummary.split(/\s+/).length} words)`);
+      let responseText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+
+      if (!responseText) {
+        console.error('Batch summary: Gemini returned empty response', JSON.stringify(geminiData).substring(0, 500));
+        return;
       }
-      break; // Success — exit retry loop
+
+      // Strip markdown code fences if present
+      responseText = responseText.replace(/^```json\s*\n?/i, '').replace(/\n?```\s*$/i, '');
+
+      // Parse the JSON response
+      let summaries: Record<string, string>;
+      try {
+        summaries = JSON.parse(responseText);
+      } catch (parseErr) {
+        console.error('Batch summary: Failed to parse JSON response:', responseText.substring(0, 500));
+        return;
+      }
+
+      // Write each summary to the articles table
+      let written = 0;
+      for (const article of articles) {
+        const summary = summaries[String(article.id)];
+        if (summary && summary.length > 20) {
+          await env.DB.prepare(
+            'UPDATE articles SET ai_summary = ? WHERE id = ?'
+          ).bind(summary, article.id).run();
+          written++;
+        }
+      }
+
+      console.log(`Batch summary: wrote ${written}/${articles.length} summaries to articles table`);
+      return; // Success
+
     } catch (err) {
-      console.error(`Article ${articleId}: Gemini summary failed (attempt ${attempt}/${MAX_RETRIES})`, err);
+      console.error(`Batch summary: failed (attempt ${attempt}/${MAX_RETRIES})`, err);
       if (attempt === MAX_RETRIES) {
-        aiSummary = article.title;
+        console.error('Batch summary: all retries exhausted');
       }
     }
   }
+}
 
-  // Store the summary
-  await env.DB.prepare(
-    'UPDATE saved_articles SET ai_summary = ? WHERE user_id = ? AND article_id = ?'
-  ).bind(aiSummary, userId, articleId).run();
-  
-  return aiSummary;
+/**
+ * Generate a single AI summary for one article. Used by save-article flow
+ * when the article doesn't already have a summary.
+ */
+async function generateSingleSummary(articleId: number, env: Env): Promise<string | null> {
+  const article = await env.DB.prepare(
+    'SELECT id, title, summary, content FROM articles WHERE id = ?'
+  ).bind(articleId).first() as { id: number; title: string; summary: string | null; content: string | null } | null;
+
+  if (!article) return null;
+
+  // Use batch function with a single article
+  await generateBatchSummaries([article], env);
+
+  // Read back the generated summary
+  const result = await env.DB.prepare(
+    'SELECT ai_summary FROM articles WHERE id = ?'
+  ).bind(articleId).first() as { ai_summary: string | null } | null;
+
+  return result?.ai_summary || null;
 }
 
 /**
