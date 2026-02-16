@@ -2927,7 +2927,7 @@ No "AI-isms" (e.g., "The article highlights," "In conclusion"). Start immediatel
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const geminiResponse = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${env.GOOGLE_AI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${env.GOOGLE_AI_API_KEY}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
