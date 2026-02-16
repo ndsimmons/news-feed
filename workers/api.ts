@@ -2856,24 +2856,24 @@ async function backfillInBatches(
   items: Array<{ article_id: number; user_id: number }>,
   env: Env
 ): Promise<void> {
-  const BATCH_SIZE = 3;
-  const DELAY_MS = 1000;
+  // Gemini free tier: 30 requests/minute = 1 request every 2 seconds
+  // Process sequentially with 2.5 second delays to stay under rate limit
+  const DELAY_MS = 2500;
   
-  for (let i = 0; i < items.length; i += BATCH_SIZE) {
-    const batch = items.slice(i, i + BATCH_SIZE);
-    console.log(`Backfill batch ${Math.floor(i / BATCH_SIZE) + 1}: processing ${batch.length} articles`);
+  console.log(`Backfill started: processing ${items.length} articles sequentially (2.5s delay between each)`);
+  
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    console.log(`Backfill progress: ${i + 1}/${items.length} - Article ${item.article_id}`);
     
-    // Process batch in parallel
-    await Promise.all(
-      batch.map(item =>
-        generateArticleSummary(item.article_id, item.user_id, env).catch(err =>
-          console.error(`Failed to generate summary for article ${item.article_id}:`, err)
-        )
-      )
-    );
+    try {
+      await generateArticleSummary(item.article_id, item.user_id, env);
+    } catch (err) {
+      console.error(`Failed to generate summary for article ${item.article_id}:`, err);
+    }
     
-    // Delay between batches to avoid overwhelming the API
-    if (i + BATCH_SIZE < items.length) {
+    // Delay between requests to respect Gemini rate limit
+    if (i < items.length - 1) {
       await new Promise(resolve => setTimeout(resolve, DELAY_MS));
     }
   }
