@@ -494,28 +494,52 @@ export default {
  * Trigger background summaries for up to 50 unsummarized articles from the database.
  * Uses gemini-2.0-flash to process articles that weren't handled by on-demand summaries.
  * Runs in background via ctx.waitUntil so it doesn't block the feed response.
+ * 
+ * ONE-TIME ONLY: Uses KV to ensure only one background job runs per user per 5 minutes.
+ * Waits 60 seconds before processing to allow real-time summaries to complete first.
  */
-function triggerBackgroundSummaries(env: Env, ctx: ExecutionContext, scoredArticles: any[]): void {
+async function triggerBackgroundSummaries(
+  env: Env, 
+  ctx: ExecutionContext, 
+  scoredArticles: any[], 
+  userId: number
+): Promise<void> {
+  // Check if we've already triggered a background job for this user recently
+  const kvKey = `bg_summary_lock:${userId}`;
+  const existingLock = await env.KV.get(kvKey);
+  
+  if (existingLock) {
+    console.log(`Background summaries: Skipping - job already running for user ${userId}`);
+    return;
+  }
+
+  // Set lock for 5 minutes (300 seconds)
+  await env.KV.put(kvKey, Date.now().toString(), { expirationTtl: 300 });
+  console.log(`Background summaries: Lock set for user ${userId}, waiting 60s before processing`);
+
   ctx.waitUntil(
     (async () => {
       try {
+        // Wait 60 seconds to let real-time summaries complete first
+        await new Promise(resolve => setTimeout(resolve, 60000));
+
         // Filter for unsummarized articles only, take next 50
         const articlesNeedingSummaries = scoredArticles
           .filter(a => !a.ai_summary || a.ai_summary === '')
           .slice(0, 50);
 
         if (articlesNeedingSummaries.length === 0) {
-          console.log('Background summaries: No unsummarized articles found in user\'s personalized feed');
+          console.log(`Background summaries: No unsummarized articles found for user ${userId}`);
           return;
         }
 
-        console.log(`Background summaries: Processing ${articlesNeedingSummaries.length} personalized articles (scored for this user) via gemini-2.0-flash`);
+        console.log(`Background summaries: Processing ${articlesNeedingSummaries.length} articles for user ${userId} via gemini-2.0-flash`);
 
         await generateBackgroundSummaries(articlesNeedingSummaries, env);
 
-        console.log(`Background summaries: Completed processing ${articlesNeedingSummaries.length} personalized articles`);
+        console.log(`Background summaries: Completed processing ${articlesNeedingSummaries.length} articles for user ${userId}`);
       } catch (err) {
-        console.error('Background summaries: error', err);
+        console.error(`Background summaries: error for user ${userId}`, err);
       }
     })()
   );
@@ -963,12 +987,12 @@ async function handleGetFeed(
        console.log(`📤 API Response - First article: id=${first.id}, score=${first.score}, adjustedScore=${first.adjustedScore}`);
      }
      
-     // Generate on-demand summaries for articles in this response (awaited)
-     await generateOnDemandSummaries(enrichedArticles, env);
+      // Generate on-demand summaries for articles in this response (awaited)
+      await generateOnDemandSummaries(enrichedArticles, env);
 
-     // Trigger background AI summary generation for user's next highest-scoring articles
-     const nextBatch = normalizedArticles.slice(offset + limit);
-     triggerBackgroundSummaries(env, ctx, nextBatch);
+      // Trigger background AI summary generation for user's next highest-scoring articles (one-time only)
+      const nextBatch = normalizedArticles.slice(offset + limit);
+      await triggerBackgroundSummaries(env, ctx, nextBatch, userId);
 
     const response: FeedResponse = {
       articles: enrichedArticles,
@@ -1035,9 +1059,9 @@ async function handleGetFeed(
     // Generate on-demand summaries for articles in this response (awaited)
     await generateOnDemandSummaries(enrichedArticles, env);
 
-    // Trigger background AI summary generation for user's next highest-scoring articles
+    // Trigger background AI summary generation for user's next highest-scoring articles (one-time only)
     const nextBatch = normalizedArticles.slice(offset + limit);
-    triggerBackgroundSummaries(env, ctx, nextBatch);
+    await triggerBackgroundSummaries(env, ctx, nextBatch, userId);
 
     const response: FeedResponse = {
       articles: enrichedArticles,
@@ -1092,9 +1116,9 @@ async function handleGetFeed(
     // Generate on-demand summaries for articles in this response (awaited)
     await generateOnDemandSummaries(enrichedArticles, env);
 
-    // Trigger background AI summary generation for user's next highest-scoring articles
+    // Trigger background AI summary generation for user's next highest-scoring articles (one-time only)
     const nextBatch = normalizedArticles.slice(offset + limit);
-    triggerBackgroundSummaries(env, ctx, nextBatch);
+    await triggerBackgroundSummaries(env, ctx, nextBatch, userId);
 
     const response: FeedResponse = {
       articles: enrichedArticles,
