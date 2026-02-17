@@ -145,6 +145,11 @@ async function trackGeminiCall(
     await env.DB.prepare(
       'INSERT INTO gemini_api_calls (request_id, model, caller, status, article_count) VALUES (?, ?, ?, ?, ?)'
     ).bind(requestId, model, caller, status, articleCount).run();
+    
+    // Check rate limits after each API call (non-blocking)
+    checkRateLimitThresholds(env).catch(err => 
+      console.error('Failed to check rate limits:', err)
+    );
   } catch (e) {
     console.error('Failed to track Gemini call:', e);
   }
@@ -283,6 +288,117 @@ async function handleGeminiUsage(
   }
 }
 
+/**
+ * Check if any rate limits have exceeded 80% threshold and send email alert.
+ * Gemini rate limits: 15 RPM, 1500 RPD
+ * Thresholds: 12 RPM (80%), 1200 RPD (80%)
+ */
+async function checkRateLimitThresholds(env: Env): Promise<void> {
+  try {
+    // Get current usage stats
+    const rpmResult = await env.DB.prepare(
+      "SELECT COUNT(*) as count FROM gemini_api_calls WHERE created_at > datetime('now', '-1 minute')"
+    ).first();
+    
+    const rpdResult = await env.DB.prepare(
+      "SELECT COUNT(*) as count FROM gemini_api_calls WHERE created_at > datetime('now', '-24 hours')"
+    ).first();
+
+    const rpm = (rpmResult?.count as number) || 0;
+    const rpd = (rpdResult?.count as number) || 0;
+
+    const RPM_LIMIT = 15;
+    const RPD_LIMIT = 1500;
+    const RPM_THRESHOLD = Math.floor(RPM_LIMIT * 0.8); // 12
+    const RPD_THRESHOLD = Math.floor(RPD_LIMIT * 0.8); // 1200
+
+    const alerts: string[] = [];
+
+    if (rpm >= RPM_THRESHOLD) {
+      alerts.push(`⚠️ **RPM Alert**: ${rpm}/${RPM_LIMIT} (${Math.round((rpm/RPM_LIMIT)*100)}% - threshold: 80%)`);
+    }
+
+    if (rpd >= RPD_THRESHOLD) {
+      alerts.push(`⚠️ **RPD Alert**: ${rpd}/${RPD_LIMIT} (${Math.round((rpd/RPD_LIMIT)*100)}% - threshold: 80%)`);
+    }
+
+    // Send email if any thresholds exceeded
+    if (alerts.length > 0) {
+      // Check if we've already sent an alert in the last hour (to prevent spam)
+      const lastAlertKey = 'rate_limit_alert_sent';
+      const lastAlert = await env.KV.get(lastAlertKey);
+      
+      if (lastAlert) {
+        console.log('Rate limit alert suppressed - already sent within last hour');
+        return;
+      }
+
+      // Send email via Resend
+      const emailResponse = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${env.RESEND_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: 'Nicofeed Alerts <alerts@nicofeed.com>',
+          to: ['ndsimmons@gmail.com'],
+          subject: '🚨 Gemini API Rate Limit Alert - 80% Threshold Exceeded',
+          html: `
+            <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+              <h1 style="color: #dc2626;">⚠️ Rate Limit Alert</h1>
+              <p>One or more Gemini API rate limits have exceeded 80% threshold:</p>
+              <ul style="font-size: 16px; line-height: 1.8;">
+                ${alerts.map(alert => `<li>${alert}</li>`).join('')}
+              </ul>
+              <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;">
+              <h2 style="color: #374151;">Current Usage</h2>
+              <table style="width: 100%; border-collapse: collapse;">
+                <tr>
+                  <td style="padding: 8px; border: 1px solid #e5e7eb;"><strong>Requests Per Minute</strong></td>
+                  <td style="padding: 8px; border: 1px solid #e5e7eb;">${rpm} / ${RPM_LIMIT}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px; border: 1px solid #e5e7eb;"><strong>Requests Per Day</strong></td>
+                  <td style="padding: 8px; border: 1px solid #e5e7eb;">${rpd} / ${RPD_LIMIT}</td>
+                </tr>
+              </table>
+              <p style="margin-top: 30px; color: #666; font-size: 14px;">
+                <a href="https://news-feed-api.nsimmons.workers.dev/api/gemini-usage" style="color: #2563eb;">View detailed usage stats</a>
+              </p>
+              <p style="color: #999; font-size: 12px;">Alert sent at: ${new Date().toISOString()}</p>
+            </div>
+          `
+        })
+      });
+
+      if (emailResponse.ok) {
+        console.log('Rate limit alert email sent successfully');
+        // Set KV flag to prevent spam (expires in 1 hour)
+        await env.KV.put(lastAlertKey, Date.now().toString(), { expirationTtl: 3600 });
+      } else {
+        const errorText = await emailResponse.text();
+        console.error('Failed to send rate limit alert email:', errorText);
+      }
+    }
+  } catch (error) {
+    console.error('Error checking rate limit thresholds:', error);
+  }
+}
+
+/**
+ * GET /api/check-rate-limits - Manually trigger rate limit check and alert
+ */
+async function handleCheckRateLimits(
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  await checkRateLimitThresholds(env);
+  return new Response(JSON.stringify({ success: true, message: 'Rate limit check completed' }), {
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -419,6 +535,10 @@ export default {
 
       if (path === '/api/gemini-usage' && request.method === 'GET') {
         return await handleGeminiUsage(env, corsHeaders);
+      }
+
+      if (path === '/api/check-rate-limits' && request.method === 'GET') {
+        return await handleCheckRateLimits(env, corsHeaders);
       }
 
       if (path === '/api/backfill-summaries' && request.method === 'POST') {
