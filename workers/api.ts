@@ -491,17 +491,11 @@ export default {
 };
 
 /**
- * Trigger batch AI summary generation for feed articles that don't have summaries yet.
- * First batch: 5 articles (fast, for immediate display on reload).
- * Second batch: remaining articles (up to 20 more).
- * All processing happens in the background via waitUntil.
- */
-/**
- * Trigger background batch summaries for up to 50 unsummarized articles from the database.
+ * Trigger background summaries for up to 50 unsummarized articles from the database.
  * Uses gemini-2.0-flash to process articles that weren't handled by on-demand summaries.
  * Runs in background via ctx.waitUntil so it doesn't block the feed response.
  */
-function triggerBatchSummaries(env: Env, ctx: ExecutionContext, scoredArticles: any[]): void {
+function triggerBackgroundSummaries(env: Env, ctx: ExecutionContext, scoredArticles: any[]): void {
   ctx.waitUntil(
     (async () => {
       try {
@@ -511,17 +505,17 @@ function triggerBatchSummaries(env: Env, ctx: ExecutionContext, scoredArticles: 
           .slice(0, 50);
 
         if (articlesNeedingSummaries.length === 0) {
-          console.log('Background batch summaries: No unsummarized articles found in user\'s personalized feed');
+          console.log('Background summaries: No unsummarized articles found in user\'s personalized feed');
           return;
         }
 
-        console.log(`Background batch summaries: Processing ${articlesNeedingSummaries.length} personalized articles (scored for this user) via gemini-2.0-flash`);
+        console.log(`Background summaries: Processing ${articlesNeedingSummaries.length} personalized articles (scored for this user) via gemini-2.0-flash`);
 
-        await generateBatchSummaries(articlesNeedingSummaries, env);
+        await generateBackgroundSummaries(articlesNeedingSummaries, env);
 
-        console.log(`Background batch summaries: Completed processing ${articlesNeedingSummaries.length} personalized articles`);
+        console.log(`Background summaries: Completed processing ${articlesNeedingSummaries.length} personalized articles`);
       } catch (err) {
-        console.error('Background batch summaries: error', err);
+        console.error('Background summaries: error', err);
       }
     })()
   );
@@ -972,9 +966,9 @@ async function handleGetFeed(
      // Generate on-demand summaries for articles in this response (awaited)
      await generateOnDemandSummaries(enrichedArticles, env);
 
-     // Trigger batch AI summary generation in the background for user's next highest-scoring articles
+     // Trigger background AI summary generation for user's next highest-scoring articles
      const nextBatch = normalizedArticles.slice(offset + limit);
-     triggerBatchSummaries(env, ctx, nextBatch);
+     triggerBackgroundSummaries(env, ctx, nextBatch);
 
     const response: FeedResponse = {
       articles: enrichedArticles,
@@ -1041,9 +1035,9 @@ async function handleGetFeed(
     // Generate on-demand summaries for articles in this response (awaited)
     await generateOnDemandSummaries(enrichedArticles, env);
 
-    // Trigger batch AI summary generation in the background for user's next highest-scoring articles
+    // Trigger background AI summary generation for user's next highest-scoring articles
     const nextBatch = normalizedArticles.slice(offset + limit);
-    triggerBatchSummaries(env, ctx, nextBatch);
+    triggerBackgroundSummaries(env, ctx, nextBatch);
 
     const response: FeedResponse = {
       articles: enrichedArticles,
@@ -1098,9 +1092,9 @@ async function handleGetFeed(
     // Generate on-demand summaries for articles in this response (awaited)
     await generateOnDemandSummaries(enrichedArticles, env);
 
-    // Trigger batch AI summary generation in the background for user's next highest-scoring articles
+    // Trigger background AI summary generation for user's next highest-scoring articles
     const nextBatch = normalizedArticles.slice(offset + limit);
-    triggerBatchSummaries(env, ctx, nextBatch);
+    triggerBackgroundSummaries(env, ctx, nextBatch);
 
     const response: FeedResponse = {
       articles: enrichedArticles,
@@ -3283,11 +3277,11 @@ async function handleGetSavedArticles(
       LIMIT ? OFFSET ?
     `).bind(userId, userId, limit, offset).all();
 
-    // Trigger batch AI summary generation for saved articles without summaries
+    // Trigger background AI summary generation for saved articles without summaries
     const articlesWithoutSummaries = (result.results as any[]).filter((a: any) => !a.ai_summary);
     if (articlesWithoutSummaries.length > 0) {
       ctx.waitUntil(
-        generateBatchSummaries(
+        generateBackgroundSummaries(
           articlesWithoutSummaries.map((a: any) => ({ id: a.id, title: a.title, summary: a.summary, content: a.content })),
           env
         )
@@ -3611,7 +3605,7 @@ async function handleBackfillSummaries(
 
 /**
  * Process backfill in smaller batches with delays to avoid rate limiting.
- * Uses generateBatchSummaries to process 10 articles per Gemini API call.
+ * Uses generateBackgroundSummaries to process 10 articles per Gemini API call.
  */
 async function backfillInBatches(
   items: Array<{ id: number; title: string; summary: string | null; content: string | null }>,
@@ -3632,7 +3626,7 @@ async function backfillInBatches(
     console.log(`Backfill progress: chunk ${chunkNum}/${totalChunks} (${chunk.length} articles)`);
     
     try {
-      await generateBatchSummaries(chunk, env);
+      await generateBackgroundSummaries(chunk, env);
     } catch (err) {
       console.error(`Failed to generate summaries for chunk ${chunkNum}:`, err);
     }
@@ -3677,7 +3671,7 @@ Constraints:
  * Generate AI summaries for a batch of articles in a single Gemini API call.
  * Sends multiple articles, receives JSON-keyed summaries, writes each to articles.ai_summary.
  */
-async function generateBatchSummaries(
+async function generateBackgroundSummaries(
   articles: Array<{ id: number; title: string; summary: string | null; content: string | null }>,
   env: Env
 ): Promise<void> {
@@ -3686,7 +3680,7 @@ async function generateBatchSummaries(
   const requestId = generateRequestId();
   const model = 'gemini-2.0-flash';
 
-  console.log(`Batch summary: generating for ${articles.length} articles in a single Gemini call (request: ${requestId})`);
+  console.log(`Background summary: generating for ${articles.length} articles in a single Gemini call (request: ${requestId})`);
 
   // Build the user prompt with all articles
   const articleEntries = articles.map(a => {
@@ -3725,16 +3719,16 @@ Return ONLY the JSON object. No markdown code fences, no explanation.`;
     );
 
     // Track this Gemini call in D1
-    await trackGeminiCall(env, requestId, model, geminiResponse.status, 'batchSummaries', articles.length);
+    await trackGeminiCall(env, requestId, model, geminiResponse.status, 'backgroundSummaries', articles.length);
 
     if (geminiResponse.status === 429) {
-      console.error(`Batch summary: Rate limited despite using queue. This should not happen.`);
+      console.error(`Background summary: Rate limited despite using queue. This should not happen.`);
       return;
     }
 
     if (!geminiResponse.ok) {
       const errorText = await geminiResponse.text();
-      console.error(`Batch summary: Gemini API error ${geminiResponse.status}: ${errorText.substring(0, 500)}`);
+      console.error(`Background summary: Gemini API error ${geminiResponse.status}: ${errorText.substring(0, 500)}`);
       return;
     }
 
@@ -3742,7 +3736,7 @@ Return ONLY the JSON object. No markdown code fences, no explanation.`;
     let responseText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
 
     if (!responseText) {
-      console.error('Batch summary: Gemini returned empty response', JSON.stringify(geminiData).substring(0, 500));
+      console.error('Background summary: Gemini returned empty response', JSON.stringify(geminiData).substring(0, 500));
       return;
     }
 
@@ -3754,7 +3748,7 @@ Return ONLY the JSON object. No markdown code fences, no explanation.`;
     try {
       summaries = JSON.parse(responseText);
     } catch (parseErr) {
-      console.error('Batch summary: Failed to parse JSON response:', responseText.substring(0, 500));
+      console.error('Background summary: Failed to parse JSON response:', responseText.substring(0, 500));
       return;
     }
 
@@ -3766,15 +3760,15 @@ Return ONLY the JSON object. No markdown code fences, no explanation.`;
       if (summary && summary.length > 20) {
         await env.DB.prepare(
           'UPDATE articles SET ai_summary = ?, ai_summary_at = ?, ai_summary_model = ?, ai_summary_request_id = ?, ai_summary_type = ? WHERE id = ?'
-        ).bind(summary, now, model, requestId, 'batch', article.id).run();
+        ).bind(summary, now, model, requestId, 'background', article.id).run();
         written++;
       }
     }
 
-    console.log(`Batch summary: wrote ${written}/${articles.length} summaries to articles table`);
+    console.log(`Background summary: wrote ${written}/${articles.length} summaries to articles table`);
 
   } catch (err) {
-    console.error('Batch summary: failed', err);
+    console.error('Background summary: failed', err);
   }
 }
 
@@ -3790,7 +3784,7 @@ async function generateSingleSummary(articleId: number, env: Env): Promise<strin
   if (!article) return null;
 
   // Use batch function with a single article
-  await generateBatchSummaries([article], env);
+  await generateBackgroundSummaries([article], env);
 
   // Read back the generated summary
   const result = await env.DB.prepare(
