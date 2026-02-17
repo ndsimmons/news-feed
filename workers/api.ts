@@ -289,9 +289,14 @@ async function handleGeminiUsage(
 }
 
 /**
- * Check if any rate limits have exceeded 80% threshold and send email alert.
+ * Check if any rate limits have exceeded thresholds and trigger circuit breakers.
  * Gemini rate limits: 15 RPM, 1500 RPD
- * Thresholds: 12 RPM (80%), 1200 RPD (80%)
+ * 
+ * Graduated Response:
+ * - 80% threshold (12 RPM / 1200 RPD): Disable backgroundSummaries, send email
+ * - 90% threshold (13.5 RPM / 1350 RPD): Disable ALL summaries, send urgent email
+ * 
+ * Circuit breaker flags expire after 24 hours (auto-recovery).
  */
 async function checkRateLimitThresholds(env: Env): Promise<void> {
   try {
@@ -309,29 +314,64 @@ async function checkRateLimitThresholds(env: Env): Promise<void> {
 
     const RPM_LIMIT = 15;
     const RPD_LIMIT = 1500;
-    const RPM_THRESHOLD = Math.floor(RPM_LIMIT * 0.8); // 12
-    const RPD_THRESHOLD = Math.floor(RPD_LIMIT * 0.8); // 1200
+    const THRESHOLD_80 = 0.8;
+    const THRESHOLD_90 = 0.9;
 
+    const rpmPercent = rpm / RPM_LIMIT;
+    const rpdPercent = rpd / RPD_LIMIT;
+    const maxPercent = Math.max(rpmPercent, rpdPercent);
+
+    let circuitBreakerLevel: 'none' | '80' | '90' = 'none';
     const alerts: string[] = [];
+    const actions: string[] = [];
 
-    if (rpm >= RPM_THRESHOLD) {
-      alerts.push(`⚠️ **RPM Alert**: ${rpm}/${RPM_LIMIT} (${Math.round((rpm/RPM_LIMIT)*100)}% - threshold: 80%)`);
+    // Determine circuit breaker level based on highest percentage
+    if (maxPercent >= THRESHOLD_90) {
+      circuitBreakerLevel = '90';
+      
+      // Set circuit breaker flag to disable ALL summaries
+      await env.KV.put('circuit_breaker_all_summaries', Date.now().toString(), { expirationTtl: 86400 }); // 24 hours
+      actions.push('🔴 **CRITICAL**: All AI summaries disabled (will auto-recover in 24hrs)');
+      
+      if (rpm >= RPM_LIMIT * THRESHOLD_90) {
+        alerts.push(`🚨 **RPM CRITICAL**: ${rpm}/${RPM_LIMIT} (${Math.round(rpmPercent*100)}% - threshold: 90%)`);
+      }
+      if (rpd >= RPD_LIMIT * THRESHOLD_90) {
+        alerts.push(`🚨 **RPD CRITICAL**: ${rpd}/${RPD_LIMIT} (${Math.round(rpdPercent*100)}% - threshold: 90%)`);
+      }
+      
+    } else if (maxPercent >= THRESHOLD_80) {
+      circuitBreakerLevel = '80';
+      
+      // Set circuit breaker flag to disable background summaries only
+      await env.KV.put('circuit_breaker_background_summaries', Date.now().toString(), { expirationTtl: 86400 }); // 24 hours
+      actions.push('🟡 **WARNING**: Background AI summaries disabled (will auto-recover in 24hrs)');
+      actions.push('✅ Real-time summaries still active');
+      
+      if (rpm >= RPM_LIMIT * THRESHOLD_80) {
+        alerts.push(`⚠️ **RPM Alert**: ${rpm}/${RPM_LIMIT} (${Math.round(rpmPercent*100)}% - threshold: 80%)`);
+      }
+      if (rpd >= RPD_LIMIT * THRESHOLD_80) {
+        alerts.push(`⚠️ **RPD Alert**: ${rpd}/${RPD_LIMIT} (${Math.round(rpdPercent*100)}% - threshold: 80%)`);
+      }
     }
 
-    if (rpd >= RPD_THRESHOLD) {
-      alerts.push(`⚠️ **RPD Alert**: ${rpd}/${RPD_LIMIT} (${Math.round((rpd/RPD_LIMIT)*100)}% - threshold: 80%)`);
-    }
-
-    // Send email if any thresholds exceeded
-    if (alerts.length > 0) {
+    // Send email if circuit breaker triggered
+    if (circuitBreakerLevel !== 'none') {
       // Check if we've already sent an alert in the last hour (to prevent spam)
-      const lastAlertKey = 'rate_limit_alert_sent';
+      const lastAlertKey = `rate_limit_alert_sent_${circuitBreakerLevel}`;
       const lastAlert = await env.KV.get(lastAlertKey);
       
       if (lastAlert) {
-        console.log('Rate limit alert suppressed - already sent within last hour');
+        console.log(`Rate limit alert suppressed - already sent ${circuitBreakerLevel}% alert within last hour`);
         return;
       }
+
+      const subject = circuitBreakerLevel === '90' 
+        ? '🚨🚨 CRITICAL: Gemini API Rate Limit 90% - All Summaries Disabled'
+        : '🚨 Gemini API Rate Limit Alert - 80% Threshold - Background Summaries Disabled';
+
+      const alertColor = circuitBreakerLevel === '90' ? '#dc2626' : '#ea580c';
 
       // Send email via Resend
       const emailResponse = await fetch('https://api.resend.com/emails', {
@@ -343,26 +383,44 @@ async function checkRateLimitThresholds(env: Env): Promise<void> {
         body: JSON.stringify({
           from: 'Nicofeed Alerts <alerts@nicofeed.com>',
           to: ['ndsimmons@gmail.com'],
-          subject: '🚨 Gemini API Rate Limit Alert - 80% Threshold Exceeded',
+          subject: subject,
           html: `
             <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-              <h1 style="color: #dc2626;">⚠️ Rate Limit Alert</h1>
-              <p>One or more Gemini API rate limits have exceeded 80% threshold:</p>
+              <h1 style="color: ${alertColor};">${circuitBreakerLevel === '90' ? '🚨 CRITICAL ALERT' : '⚠️ Warning'}</h1>
+              <p><strong>Gemini API rate limits exceeded ${circuitBreakerLevel}% threshold. Circuit breaker activated.</strong></p>
+              
+              <div style="background-color: #fef2f2; border-left: 4px solid ${alertColor}; padding: 16px; margin: 20px 0;">
+                <h3 style="margin-top: 0; color: ${alertColor};">Actions Taken:</h3>
+                <ul style="margin-bottom: 0;">
+                  ${actions.map(action => `<li>${action}</li>`).join('')}
+                </ul>
+              </div>
+
+              <h2 style="color: #374151;">Rate Limit Alerts:</h2>
               <ul style="font-size: 16px; line-height: 1.8;">
                 ${alerts.map(alert => `<li>${alert}</li>`).join('')}
               </ul>
+              
               <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;">
               <h2 style="color: #374151;">Current Usage</h2>
               <table style="width: 100%; border-collapse: collapse;">
                 <tr>
                   <td style="padding: 8px; border: 1px solid #e5e7eb;"><strong>Requests Per Minute</strong></td>
-                  <td style="padding: 8px; border: 1px solid #e5e7eb;">${rpm} / ${RPM_LIMIT}</td>
+                  <td style="padding: 8px; border: 1px solid #e5e7eb;">${rpm} / ${RPM_LIMIT} (${Math.round(rpmPercent*100)}%)</td>
                 </tr>
                 <tr>
                   <td style="padding: 8px; border: 1px solid #e5e7eb;"><strong>Requests Per Day</strong></td>
-                  <td style="padding: 8px; border: 1px solid #e5e7eb;">${rpd} / ${RPD_LIMIT}</td>
+                  <td style="padding: 8px; border: 1px solid #e5e7eb;">${rpd} / ${RPD_LIMIT} (${Math.round(rpdPercent*100)}%)</td>
                 </tr>
               </table>
+              
+              <div style="background-color: #f0f9ff; border: 1px solid #bae6fd; padding: 16px; margin: 20px 0; border-radius: 8px;">
+                <h3 style="margin-top: 0; color: #0369a1;">Recovery Options:</h3>
+                <ul style="margin-bottom: 0;">
+                  <li><strong>Automatic</strong>: Circuit breaker will auto-reset in 24 hours</li>
+                  <li><strong>Manual</strong>: Call <code>GET /api/reset-circuit-breaker</code> to clear flags immediately</li>
+                </ul>
+              </div>
               <p style="margin-top: 30px; color: #666; font-size: 14px;">
                 <a href="https://news-feed-api.nsimmons.workers.dev/api/gemini-usage" style="color: #2563eb;">View detailed usage stats</a>
               </p>
@@ -397,6 +455,40 @@ async function handleCheckRateLimits(
   return new Response(JSON.stringify({ success: true, message: 'Rate limit check completed' }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   });
+}
+
+/**
+ * GET /api/reset-circuit-breaker - Manually reset all circuit breaker flags
+ * Clears both 80% and 90% threshold flags to resume normal operation.
+ */
+async function handleResetCircuitBreaker(
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  try {
+    // Clear all circuit breaker flags
+    await env.KV.delete('circuit_breaker_background_summaries');
+    await env.KV.delete('circuit_breaker_all_summaries');
+    
+    console.log('Circuit breaker flags cleared - resuming normal operation');
+    
+    return new Response(JSON.stringify({ 
+      success: true, 
+      message: 'Circuit breaker reset successfully. All AI summaries re-enabled.',
+      timestamp: new Date().toISOString()
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  } catch (error) {
+    console.error('Error resetting circuit breaker:', error);
+    return new Response(JSON.stringify({ 
+      success: false, 
+      error: 'Failed to reset circuit breaker' 
+    }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
 }
 
 export default {
@@ -541,6 +633,10 @@ export default {
         return await handleCheckRateLimits(env, corsHeaders);
       }
 
+      if (path === '/api/reset-circuit-breaker' && request.method === 'GET') {
+        return await handleResetCircuitBreaker(env, corsHeaders);
+      }
+
       if (path === '/api/backfill-summaries' && request.method === 'POST') {
         return await handleBackfillSummaries(request, env, corsHeaders, ctx);
       }
@@ -624,6 +720,20 @@ async function triggerBackgroundSummaries(
   scoredArticles: any[], 
   userId: number
 ): Promise<void> {
+  // Check circuit breakers
+  const allSummariesDisabled = await env.KV.get('circuit_breaker_all_summaries');
+  const backgroundSummariesDisabled = await env.KV.get('circuit_breaker_background_summaries');
+  
+  if (allSummariesDisabled) {
+    console.log(`Background summaries: BLOCKED - all summaries circuit breaker active (90% threshold)`);
+    return;
+  }
+  
+  if (backgroundSummariesDisabled) {
+    console.log(`Background summaries: BLOCKED - background summaries circuit breaker active (80% threshold)`);
+    return;
+  }
+  
   // Check if we've already triggered a background job for this user recently
   const kvKey = `bg_summary_lock:${userId}`;
   const existingLock = await env.KV.get(kvKey);
@@ -670,11 +780,21 @@ async function triggerBackgroundSummaries(
  * Called inline (awaited) before the feed response is sent, so users always see summaries.
  * Batches: first 5 articles, then next 15 articles.
  * Writes summaries to the DB and mutates the articles array in place.
+ * 
+ * Respects circuit breaker: disabled if 90% threshold exceeded.
  */
 async function generateOnDemandSummaries(
   articles: any[],
   env: Env
 ): Promise<void> {
+  // Check circuit breaker for all summaries (90% threshold)
+  const allSummariesDisabled = await env.KV.get('circuit_breaker_all_summaries');
+  
+  if (allSummariesDisabled) {
+    console.log(`On-demand summaries: BLOCKED - all summaries circuit breaker active (90% threshold)`);
+    return; // Fail silently - will fallback to RSS summaries
+  }
+  
   const needsSummary = articles.filter((a: any) => !a.ai_summary);
   if (needsSummary.length === 0) return;
 
@@ -3921,6 +4041,14 @@ Return ONLY the JSON object. No markdown code fences, no explanation.`;
  * when the article doesn't already have a summary.
  */
 async function generateSingleSummary(articleId: number, env: Env): Promise<string | null> {
+  // Check circuit breaker
+  const allSummariesDisabled = await env.KV.get('circuit_breaker_all_summaries');
+  
+  if (allSummariesDisabled) {
+    console.log(`Single summary: BLOCKED - all summaries circuit breaker active (90% threshold)`);
+    return null; // Will fallback to RSS summary
+  }
+  
   const article = await env.DB.prepare(
     'SELECT id, title, summary, content FROM articles WHERE id = ?'
   ).bind(articleId).first() as { id: number; title: string; summary: string | null; content: string | null } | null;
