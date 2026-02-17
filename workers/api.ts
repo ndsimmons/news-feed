@@ -121,6 +121,168 @@ interface Env {
   GOOGLE_AI_API_KEY: string; // Google AI Studio API key for Gemini
 }
 
+/**
+ * Generate a unique request ID for a Gemini API call.
+ */
+function generateRequestId(): string {
+  return `gem_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+}
+
+/**
+ * Track a Gemini API call in D1.
+ * Inserts a row into gemini_api_calls table.
+ * Returns the request_id for use in article metadata.
+ */
+async function trackGeminiCall(
+  env: Env,
+  requestId: string,
+  model: string,
+  status: number,
+  caller: string,
+  articleCount: number = 0
+): Promise<void> {
+  try {
+    await env.DB.prepare(
+      'INSERT INTO gemini_api_calls (request_id, model, caller, status, article_count) VALUES (?, ?, ?, ?, ?)'
+    ).bind(requestId, model, caller, status, articleCount).run();
+  } catch (e) {
+    console.error('Failed to track Gemini call:', e);
+  }
+}
+
+/**
+ * Global Gemini API rate limiter to respect 15 RPM limit.
+ * Queues requests and processes them sequentially with a 4-second delay between each.
+ * 15 RPM = 1 request every 4 seconds.
+ */
+class GeminiRateLimiter {
+  private queue: Array<() => Promise<void>> = [];
+  private processing = false;
+  private lastRequestTime = 0;
+  private readonly MIN_REQUEST_INTERVAL_MS = 4000; // 15 RPM = 4 seconds between requests
+
+  /**
+   * Add a request to the queue and process it when ready.
+   * Returns a promise that resolves with the response.
+   */
+  async enqueue<T>(requestFn: () => Promise<T>): Promise<T> {
+    return new Promise((resolve, reject) => {
+      this.queue.push(async () => {
+        try {
+          const result = await requestFn();
+          resolve(result);
+        } catch (error) {
+          reject(error);
+        }
+      });
+      this.processQueue();
+    });
+  }
+
+  private async processQueue(): Promise<void> {
+    if (this.processing || this.queue.length === 0) return;
+
+    this.processing = true;
+
+    while (this.queue.length > 0) {
+      const now = Date.now();
+      const timeSinceLastRequest = now - this.lastRequestTime;
+      
+      // Wait if we need to respect the rate limit
+      if (timeSinceLastRequest < this.MIN_REQUEST_INTERVAL_MS) {
+        const delayMs = this.MIN_REQUEST_INTERVAL_MS - timeSinceLastRequest;
+        console.log(`[GeminiRateLimiter] Waiting ${delayMs}ms to respect 15 RPM limit (${this.queue.length} requests in queue)`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+
+      const task = this.queue.shift();
+      if (task) {
+        this.lastRequestTime = Date.now();
+        await task();
+      }
+    }
+
+    this.processing = false;
+  }
+}
+
+// Global rate limiter instance
+const geminiRateLimiter = new GeminiRateLimiter();
+
+/**
+ * GET /api/gemini-usage - Returns Gemini API usage stats from D1.
+ * Shows RPM, RPH, RPD, breakdowns by caller type, and recent calls.
+ */
+async function handleGeminiUsage(
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  try {
+    // RPD: all calls today
+    const rpdResult = await env.DB.prepare(
+      "SELECT caller, COUNT(*) as count, SUM(CASE WHEN status = 429 THEN 1 ELSE 0 END) as rate_limited, SUM(CASE WHEN status >= 400 AND status != 429 THEN 1 ELSE 0 END) as errors, SUM(article_count) as total_articles FROM gemini_api_calls WHERE created_at > datetime('now', '-24 hours') GROUP BY caller"
+    ).all();
+
+    // RPH: calls in last hour
+    const rphResult = await env.DB.prepare(
+      "SELECT caller, COUNT(*) as count FROM gemini_api_calls WHERE created_at > datetime('now', '-1 hour') GROUP BY caller"
+    ).all();
+
+    // RPM: calls in last minute
+    const rpmResult = await env.DB.prepare(
+      "SELECT caller, COUNT(*) as count FROM gemini_api_calls WHERE created_at > datetime('now', '-1 minute') GROUP BY caller"
+    ).all();
+
+    // Recent 10 calls
+    const recentResult = await env.DB.prepare(
+      'SELECT request_id, model, caller, status, article_count, created_at FROM gemini_api_calls ORDER BY id DESC LIMIT 10'
+    ).all();
+
+    // Summary stats for articles
+    const articleStats = await env.DB.prepare(
+      "SELECT ai_summary_type, COUNT(*) as count FROM articles WHERE ai_summary_type IS NOT NULL GROUP BY ai_summary_type"
+    ).all();
+
+    const rpdByType: Record<string, any> = {};
+    for (const row of rpdResult.results as any[]) {
+      rpdByType[row.caller] = { count: row.count, rateLimited: row.rate_limited, errors: row.errors, totalArticles: row.total_articles };
+    }
+
+    const rphByType: Record<string, number> = {};
+    for (const row of rphResult.results as any[]) {
+      rphByType[row.caller] = row.count;
+    }
+
+    const rpmByType: Record<string, number> = {};
+    for (const row of rpmResult.results as any[]) {
+      rpmByType[row.caller] = row.count;
+    }
+
+    const summaryBreakdown: Record<string, number> = {};
+    for (const row of articleStats.results as any[]) {
+      summaryBreakdown[row.ai_summary_type] = row.count;
+    }
+
+    const totalRpd = Object.values(rpdByType).reduce((sum: number, v: any) => sum + v.count, 0);
+    const totalRph = Object.values(rphByType).reduce((sum: number, v: number) => sum + v, 0);
+    const totalRpm = Object.values(rpmByType).reduce((sum: number, v: number) => sum + v, 0);
+
+    return new Response(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      totals: { rpm: totalRpm, rph: totalRph, rpd: totalRpd },
+      byType: { rpd: rpdByType, rph: rphByType, rpm: rpmByType },
+      articleSummaries: summaryBreakdown,
+      recent: recentResult.results
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ error: String(error) }), {
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -255,6 +417,10 @@ export default {
         return await handleBackfillWeights(request, env, corsHeaders);
       }
 
+      if (path === '/api/gemini-usage' && request.method === 'GET') {
+        return await handleGeminiUsage(env, corsHeaders);
+      }
+
       if (path === '/api/backfill-summaries' && request.method === 'POST') {
         return await handleBackfillSummaries(request, env, corsHeaders, ctx);
       }
@@ -330,34 +496,152 @@ export default {
  * Second batch: remaining articles (up to 20 more).
  * All processing happens in the background via waitUntil.
  */
-function triggerBatchSummaries(articles: any[], env: Env, ctx: ExecutionContext): void {
-  const needsSummary = articles.filter((a: any) => !a.ai_summary);
-  if (needsSummary.length === 0) return;
-
-  console.log(`Feed batch summaries: ${needsSummary.length} articles need summaries`);
-
-  // First batch: 5 articles (fast)
-  const firstBatch = needsSummary.slice(0, 5);
-  // Second batch: next 20 articles
-  const secondBatch = needsSummary.slice(5, 25);
-
+/**
+ * Trigger background batch summaries for up to 50 unsummarized articles from the database.
+ * Uses gemini-2.0-flash to process articles that weren't handled by on-demand summaries.
+ * Runs in background via ctx.waitUntil so it doesn't block the feed response.
+ */
+function triggerBatchSummaries(env: Env, ctx: ExecutionContext, scoredArticles: any[]): void {
   ctx.waitUntil(
     (async () => {
-      // Fire first batch immediately
-      await generateBatchSummaries(
-        firstBatch.map((a: any) => ({ id: a.id, title: a.title, summary: a.summary, content: a.content })),
-        env
-      );
+      try {
+        // Filter for unsummarized articles only, take next 50
+        const articlesNeedingSummaries = scoredArticles
+          .filter(a => !a.ai_summary || a.ai_summary === '')
+          .slice(0, 50);
 
-      // Fire second batch if there are more
-      if (secondBatch.length > 0) {
-        await generateBatchSummaries(
-          secondBatch.map((a: any) => ({ id: a.id, title: a.title, summary: a.summary, content: a.content })),
-          env
-        );
+        if (articlesNeedingSummaries.length === 0) {
+          console.log('Background batch summaries: No unsummarized articles found in user\'s personalized feed');
+          return;
+        }
+
+        console.log(`Background batch summaries: Processing ${articlesNeedingSummaries.length} personalized articles (scored for this user) via gemini-2.0-flash`);
+
+        await generateBatchSummaries(articlesNeedingSummaries, env);
+
+        console.log(`Background batch summaries: Completed processing ${articlesNeedingSummaries.length} personalized articles`);
+      } catch (err) {
+        console.error('Background batch summaries: error', err);
       }
     })()
   );
+}
+
+/**
+ * Generate on-demand AI summaries for articles missing them using gemini-2.0-flash.
+ * Called inline (awaited) before the feed response is sent, so users always see summaries.
+ * Batches: first 5 articles, then next 15 articles.
+ * Writes summaries to the DB and mutates the articles array in place.
+ */
+async function generateOnDemandSummaries(
+  articles: any[],
+  env: Env
+): Promise<void> {
+  const needsSummary = articles.filter((a: any) => !a.ai_summary);
+  if (needsSummary.length === 0) return;
+
+  console.log(`On-demand summaries: ${needsSummary.length} articles need summaries via gemini-2.0-flash`);
+
+  // First batch: 5 articles
+  const firstBatch = needsSummary.slice(0, 5);
+  // Second batch: next 15 articles
+  const secondBatch = needsSummary.slice(5, 20);
+
+  // Helper to generate summaries for a batch
+  const generateBatch = async (batch: any[]) => {
+    if (batch.length === 0) return;
+
+    const requestId = generateRequestId();
+    const model = 'gemini-2.0-flash';
+
+    const articleEntries = batch.map(a => {
+      const text = a.content || a.summary || a.title;
+      return `[ARTICLE_ID: ${a.id}]\nTitle: ${a.title}\nText: ${text.substring(0, 1500)}`;
+    }).join('\n\n---\n\n');
+
+    const systemPrompt = AI_SUMMARY_SYSTEM_PROMPT + `
+
+BATCH MODE: You will receive multiple articles separated by "---". For each article, generate a summary following the format above.
+
+Return your response as valid JSON: an object where each key is the article ID (as a string) and each value is the summary text. Example:
+{"12345": "Summary for article 12345...", "67890": "Summary for article 67890..."}
+
+Return ONLY the JSON object. No markdown code fences, no explanation.`;
+
+    try {
+      // Use rate limiter to respect 15 RPM
+      const geminiResponse = await geminiRateLimiter.enqueue(() =>
+        fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GOOGLE_AI_API_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              system_instruction: { parts: [{ text: systemPrompt }] },
+              contents: [{ role: 'user', parts: [{ text: articleEntries }] }],
+              generationConfig: {
+                maxOutputTokens: batch.length * 200,
+                temperature: 0.7,
+                responseMimeType: 'application/json'
+              }
+            })
+          }
+        )
+      );
+
+      // Track this Gemini call in D1
+      await trackGeminiCall(env, requestId, model, geminiResponse.status, 'onDemandSummaries', batch.length);
+
+      if (!geminiResponse.ok) {
+        const errorBody = await geminiResponse.text();
+        console.error(`On-demand summaries: Gemini returned ${geminiResponse.status}: ${errorBody.substring(0, 500)}`);
+        return;
+      }
+
+      const geminiData = await geminiResponse.json() as any;
+      let responseText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+
+      if (!responseText) {
+        console.error('On-demand summaries: Gemini returned empty response');
+        return;
+      }
+
+      // Strip markdown code fences if present
+      responseText = responseText.replace(/^```json\s*\n?/i, '').replace(/\n?```\s*$/i, '');
+
+      let summaries: Record<string, string>;
+      try {
+        summaries = JSON.parse(responseText);
+      } catch (parseErr) {
+        console.error('On-demand summaries: Failed to parse JSON:', responseText.substring(0, 500));
+        return;
+      }
+
+      // Write summaries + metadata to DB and update articles in place
+      const now = new Date().toISOString();
+      for (const article of batch) {
+        const summary = summaries[String(article.id)];
+        if (summary && typeof summary === 'string' && summary.length > 10) {
+          article.ai_summary = summary;
+
+          await env.DB.prepare(
+            'UPDATE articles SET ai_summary = ?, ai_summary_at = ?, ai_summary_model = ?, ai_summary_request_id = ?, ai_summary_type = ? WHERE id = ?'
+          ).bind(summary, now, model, requestId, 'realtime', article.id).run();
+        }
+      }
+
+      console.log(`On-demand summaries: generated ${Object.keys(summaries).length} summaries for batch of ${batch.length} (request: ${requestId})`);
+
+    } catch (err) {
+      console.error('On-demand summaries: error', err);
+    }
+  };
+
+  // Generate first batch (5 articles) - awaited
+  await generateBatch(firstBatch);
+
+  // Generate second batch (15 articles) - awaited
+  await generateBatch(secondBatch);
 }
 
 /**
@@ -658,35 +942,39 @@ async function handleGetFeed(
    // ========================================
    // LOGGED OUT FEED (Generic Diverse Content)
    // ========================================
-  // Users must log in to vote and progress through algorithms
-  // Show balanced, recent content to encourage signup
-  if (isLoggedOut) {
-    console.log(`LOGGED OUT FEED: Showing generic diverse content`);
-    
-    // Use onboarding scoring for logged-out users (balanced, no recency bias)
-    const diverseArticles = scoreAndSortArticlesOnboarding(articles);
-    
-    // Normalize scores to bell curve (mean=100, stdDev=20) before pagination
-    let normalizedArticles = normalizeScoresToBellCurve(diverseArticles);
-    
-    // Apply pagination
-    const topArticles = normalizedArticles.slice(offset, offset + limit);
-    
-    // Add user vote/save status (always 0/false for logged out)
-    const enrichedArticles = topArticles.map(article => ({
-      ...article,
-      userVote: 0,
-      isSaved: false
-    }));
-    
-    // DEBUG: Log first article to verify adjustedScore is present
-    if (enrichedArticles.length > 0) {
-      const first = enrichedArticles[0];
-      console.log(`📤 API Response - First article: id=${first.id}, score=${first.score}, adjustedScore=${first.adjustedScore}`);
-    }
-    
-    // Trigger batch AI summary generation for articles missing summaries
-    triggerBatchSummaries(enrichedArticles, env, ctx);
+   // Users must log in to vote and progress through algorithms
+   // Show balanced, recent content to encourage signup
+   if (isLoggedOut) {
+     console.log(`LOGGED OUT FEED: Showing generic diverse content`);
+     
+     // Use onboarding scoring for logged-out users (balanced, no recency bias)
+     const diverseArticles = scoreAndSortArticlesOnboarding(articles);
+     
+     // Normalize scores to bell curve (mean=100, stdDev=20) before pagination
+     let normalizedArticles = normalizeScoresToBellCurve(diverseArticles);
+     
+     // Apply pagination
+     const topArticles = normalizedArticles.slice(offset, offset + limit);
+     
+     // Add user vote/save status (always 0/false for logged out)
+     const enrichedArticles = topArticles.map(article => ({
+       ...article,
+       userVote: 0,
+       isSaved: false
+     }));
+     
+     // DEBUG: Log first article to verify adjustedScore is present
+     if (enrichedArticles.length > 0) {
+       const first = enrichedArticles[0];
+       console.log(`📤 API Response - First article: id=${first.id}, score=${first.score}, adjustedScore=${first.adjustedScore}`);
+     }
+     
+     // Generate on-demand summaries for articles in this response (awaited)
+     await generateOnDemandSummaries(enrichedArticles, env);
+
+     // Trigger batch AI summary generation in the background for user's next highest-scoring articles
+     const nextBatch = normalizedArticles.slice(offset + limit);
+     triggerBatchSummaries(env, ctx, nextBatch);
 
     const response: FeedResponse = {
       articles: enrichedArticles,
@@ -750,8 +1038,12 @@ async function handleGetFeed(
       console.log(`📤 API Response - First article: id=${first.id}, score=${first.score}, adjustedScore=${first.adjustedScore}`);
     }
     
-    // Trigger batch AI summary generation for articles missing summaries
-    triggerBatchSummaries(enrichedArticles, env, ctx);
+    // Generate on-demand summaries for articles in this response (awaited)
+    await generateOnDemandSummaries(enrichedArticles, env);
+
+    // Trigger batch AI summary generation in the background for user's next highest-scoring articles
+    const nextBatch = normalizedArticles.slice(offset + limit);
+    triggerBatchSummaries(env, ctx, nextBatch);
 
     const response: FeedResponse = {
       articles: enrichedArticles,
@@ -803,8 +1095,12 @@ async function handleGetFeed(
       console.log(`📤 API Response - First article: id=${first.id}, score=${first.score}, adjustedScore=${first.adjustedScore}`);
     }
     
-    // Trigger batch AI summary generation for articles missing summaries
-    triggerBatchSummaries(enrichedArticles, env, ctx);
+    // Generate on-demand summaries for articles in this response (awaited)
+    await generateOnDemandSummaries(enrichedArticles, env);
+
+    // Trigger batch AI summary generation in the background for user's next highest-scoring articles
+    const nextBatch = normalizedArticles.slice(offset + limit);
+    triggerBatchSummaries(env, ctx, nextBatch);
 
     const response: FeedResponse = {
       articles: enrichedArticles,
@@ -1436,7 +1732,7 @@ async function addSuggestedCategory(responseData: any, env: Env): Promise<any> {
 
 /**
  * POST /api/search-sources - Search for news sources by keyword.
- * Scrapes DuckDuckGo HTML results to find the top 3 matching news websites.
+ * Uses gemini-2.0-flash to recommend 3 website URLs matching the query.
  * Returns an array of { name, url, description } objects.
  */
 async function handleSearchSources(
@@ -1452,50 +1748,56 @@ async function handleSearchSources(
       });
     }
 
-    // Use Gemini to suggest 3 news websites for the given query
-    // Use gemini-2.0-flash (separate quota from 2.5-flash-lite used for summaries)
-    const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${env.GOOGLE_AI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `The user is searching for news sources to add to their RSS reader. Their search query is: "${query.trim()}"
+    const requestId = generateRequestId();
+    const model = 'gemini-2.0-flash';
 
-Suggest exactly 3 real, well-known news websites that best match this query. For each, provide the website name, homepage URL, and a one-sentence description of what they cover.
+    // Use rate limiter to respect 15 RPM
+    const geminiResponse = await geminiRateLimiter.enqueue(() =>
+      fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GOOGLE_AI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: `You are a URL recommender for news and media websites. The user is searching for: "${query.trim()}"
 
-Return ONLY a JSON array with exactly 3 objects, each having "name", "url", and "description" fields. No markdown, no explanation.
+Return exactly 3 real website URLs that most closely match this search. Each URL must be a real, active news or media website homepage.
 
-Example: [{"name": "Reuters", "url": "https://www.reuters.com", "description": "Global news wire covering breaking news, business, markets, and world events."}]` }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 500 }
-        })
-      }
+Return ONLY 3 URLs, one per line. No other text, no numbering, no descriptions.` }] }],
+            generationConfig: { temperature: 0.1, maxOutputTokens: 150 }
+          })
+        }
+      )
     );
+
+    // Track this Gemini call in D1
+    await trackGeminiCall(env, requestId, model, geminiResponse.status, 'searchSources', 0);
+
+    if (geminiResponse.status === 429) {
+      return new Response(JSON.stringify({ error: 'Search is temporarily rate limited. Please try entering a URL directly, or try again in a minute.' }), {
+        status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
 
     const geminiData = await geminiResponse.json() as any;
     const responseText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
-    // Parse the JSON array from Gemini's response
+    // Parse the plain-text URL list
     let results: Array<{ name: string; url: string; description: string }> = [];
-    try {
-      // Strip markdown code fences if present
-      const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-      if (Array.isArray(parsed)) {
-        results = parsed.slice(0, 3).map((r: any) => ({
-          name: String(r.name || ''),
-          url: String(r.url || ''),
-          description: String(r.description || '')
-        })).filter((r: any) => r.name && r.url);
+    const lines = responseText.trim().split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0);
+    
+    for (const line of lines.slice(0, 3)) {
+      // Extract URL from the line (strip any numbering, bullets, etc.)
+      const urlMatch = line.match(/(https?:\/\/[^\s,]+)/);
+      if (urlMatch) {
+        const url = urlMatch[1].replace(/[)>\]]+$/, ''); // strip trailing brackets/parens
+        try {
+          const hostname = new URL(url).hostname.replace(/^www\./, '');
+          // Derive a display name from the hostname (e.g. "nytimes.com" -> "Nytimes")
+          const name = hostname.split('.')[0].charAt(0).toUpperCase() + hostname.split('.')[0].slice(1);
+          results.push({ name, url, description: hostname });
+        } catch (e) { /* skip invalid URLs */ }
       }
-    } catch (e) {
-      console.error('Failed to parse Gemini search results:', responseText);
-    }
-
-    if (results.length === 0 && geminiResponse.status === 429) {
-      return new Response(JSON.stringify({ error: 'Search is temporarily rate limited. Please try entering a URL directly, or try again in a minute.' }), {
-        status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
     }
 
     return new Response(JSON.stringify({ results }), {
@@ -3354,8 +3656,8 @@ Task: Analyze the provided news article. Return a summary in EXACTLY this two-pa
 PART 1 — EXECUTIVE SUMMARY (1-2 sentences, plain text, no bullet):
 State the primary event or finding. No labels, no headers. Start immediately with the facts.
 
-PART 2 — SUPPORTING EVIDENCE (exactly 2-4 bullet points, NEVER fewer than 2):
-Each bullet MUST start with "* " on a new line. Each bullet is one new fact, number, or piece of evidence that supports the thesis above. No bullet should repeat information from Part 1. You MUST include at least 2 bullets. If the article is short, extract 2 distinct facts. One bullet is NEVER acceptable.
+PART 2 -- SUPPORTING EVIDENCE (exactly 2-5 bullet points, NEVER fewer than 2):
+Each bullet MUST start with "* " on a new line. Each bullet is one new fact, number, quote, or piece of evidence that supports the thesis above. No bullet should repeat information from Part 1. You MUST include at least 2 bullets. If the article is short, extract 2 distinct facts. One bullet is NEVER acceptable. CRITICAL RULE: Look at what you just wrote in Part 1. You are strictly forbidden from reusing any facts, outcomes, or statistics mentioned there.
 
 Anchor bullets in hard numbers, percentages, multipliers (3x), or dollar amounts whenever the text provides them.
 
@@ -3381,7 +3683,10 @@ async function generateBatchSummaries(
 ): Promise<void> {
   if (articles.length === 0) return;
 
-  console.log(`Batch summary: generating for ${articles.length} articles in a single Gemini call`);
+  const requestId = generateRequestId();
+  const model = 'gemini-2.0-flash';
+
+  console.log(`Batch summary: generating for ${articles.length} articles in a single Gemini call (request: ${requestId})`);
 
   // Build the user prompt with all articles
   const articleEntries = articles.map(a => {
@@ -3398,12 +3703,11 @@ Return your response as valid JSON: an object where each key is the article ID (
 
 Return ONLY the JSON object. No markdown code fences, no explanation.`;
 
-  const MAX_RETRIES = 3;
-
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const geminiResponse = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${env.GOOGLE_AI_API_KEY}`,
+  try {
+    // Use rate limiter to respect 15 RPM (no retries - fail fast on rate limit)
+    const geminiResponse = await geminiRateLimiter.enqueue(() =>
+      fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${env.GOOGLE_AI_API_KEY}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3417,61 +3721,60 @@ Return ONLY the JSON object. No markdown code fences, no explanation.`;
             }
           })
         }
-      );
+      )
+    );
 
-      if (geminiResponse.status === 429) {
-        const retryDelay = attempt * 10000;
-        console.log(`Batch summary: Rate limited (attempt ${attempt}/${MAX_RETRIES}), retrying in ${retryDelay / 1000}s...`);
-        await new Promise(resolve => setTimeout(resolve, retryDelay));
-        continue;
-      }
+    // Track this Gemini call in D1
+    await trackGeminiCall(env, requestId, model, geminiResponse.status, 'batchSummaries', articles.length);
 
-      if (!geminiResponse.ok) {
-        const errorText = await geminiResponse.text();
-        throw new Error(`Gemini API error ${geminiResponse.status}: ${errorText}`);
-      }
+    if (geminiResponse.status === 429) {
+      console.error(`Batch summary: Rate limited despite using queue. This should not happen.`);
+      return;
+    }
 
-      const geminiData = await geminiResponse.json() as any;
-      let responseText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (!geminiResponse.ok) {
+      const errorText = await geminiResponse.text();
+      console.error(`Batch summary: Gemini API error ${geminiResponse.status}: ${errorText.substring(0, 500)}`);
+      return;
+    }
 
-      if (!responseText) {
-        console.error('Batch summary: Gemini returned empty response', JSON.stringify(geminiData).substring(0, 500));
-        return;
-      }
+    const geminiData = await geminiResponse.json() as any;
+    let responseText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
 
-      // Strip markdown code fences if present
-      responseText = responseText.replace(/^```json\s*\n?/i, '').replace(/\n?```\s*$/i, '');
+    if (!responseText) {
+      console.error('Batch summary: Gemini returned empty response', JSON.stringify(geminiData).substring(0, 500));
+      return;
+    }
 
-      // Parse the JSON response
-      let summaries: Record<string, string>;
-      try {
-        summaries = JSON.parse(responseText);
-      } catch (parseErr) {
-        console.error('Batch summary: Failed to parse JSON response:', responseText.substring(0, 500));
-        return;
-      }
+    // Strip markdown code fences if present
+    responseText = responseText.replace(/^```json\s*\n?/i, '').replace(/\n?```\s*$/i, '');
 
-      // Write each summary to the articles table
-      let written = 0;
-      for (const article of articles) {
-        const summary = summaries[String(article.id)];
-        if (summary && summary.length > 20) {
-          await env.DB.prepare(
-            'UPDATE articles SET ai_summary = ? WHERE id = ?'
-          ).bind(summary, article.id).run();
-          written++;
-        }
-      }
+    // Parse the JSON response
+    let summaries: Record<string, string>;
+    try {
+      summaries = JSON.parse(responseText);
+    } catch (parseErr) {
+      console.error('Batch summary: Failed to parse JSON response:', responseText.substring(0, 500));
+      return;
+    }
 
-      console.log(`Batch summary: wrote ${written}/${articles.length} summaries to articles table`);
-      return; // Success
-
-    } catch (err) {
-      console.error(`Batch summary: failed (attempt ${attempt}/${MAX_RETRIES})`, err);
-      if (attempt === MAX_RETRIES) {
-        console.error('Batch summary: all retries exhausted');
+    // Write each summary + metadata to the articles table
+    let written = 0;
+    const now = new Date().toISOString();
+    for (const article of articles) {
+      const summary = summaries[String(article.id)];
+      if (summary && summary.length > 20) {
+        await env.DB.prepare(
+          'UPDATE articles SET ai_summary = ?, ai_summary_at = ?, ai_summary_model = ?, ai_summary_request_id = ?, ai_summary_type = ? WHERE id = ?'
+        ).bind(summary, now, model, requestId, 'batch', article.id).run();
+        written++;
       }
     }
+
+    console.log(`Batch summary: wrote ${written}/${articles.length} summaries to articles table`);
+
+  } catch (err) {
+    console.error('Batch summary: failed', err);
   }
 }
 
